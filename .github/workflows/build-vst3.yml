@@ -20,13 +20,13 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Package VST3
-        run: Compress-Archive -Path "build/JeDExSymbiosis_artefacts/Release/VST3/JeDEx Symbiosis.vst3" -DestinationPath "JeDEx-Symbiosis-VST3.zip"
+        run: Compress-Archive -Path "build/Carve_artefacts/Release/VST3/JeDEx CARVE.vst3" -DestinationPath "JeDEx-CARVE-VST3.zip"
 
       - name: Upload VST3 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JeDEx-Symbiosis-VST3-Windows
-          path: build/JeDExSymbiosis_artefacts/Release/VST3/
+          name: JeDEx-CARVE-VST3-Windows
+          path: build/Carve_artefacts/Release/VST3/
 
       # Publish/refresh a "latest" release so the zip is downloadable
       # without any GitHub authentication.
@@ -35,6 +35,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: "JeDEx Symbiosis — latest build"
-          files: JeDEx-Symbiosis-VST3.zip
+          name: "JeDEx CARVE — latest build"
+          files: JeDEx-CARVE-VST3.zip
           make_latest: true

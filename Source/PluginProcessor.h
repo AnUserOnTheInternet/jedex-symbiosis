@@ -8,89 +8,106 @@
 
 //==============================================================================
 /**
-    SpectralEngine — one instance per audio channel (L/R).
+    CarveEngine — one instance per audio channel (L/R).
 
-    Runs a 2048-point STFT (75 % overlap, periodic Hann, weighted overlap-add)
-    over three time-aligned layers:
+    Spectral "make room" processor. The MAIN input is the material that gets
+    carved (a layer bus, a pad stack, a full instrumental...). The two
+    sidechain inputs are PRIORITY references (lead, vocal, kick...) that are
+    analysed only. Wherever a priority source needs spectrum, the same bands
+    are dynamically attenuated in the main input — magnitudes only, phases
+    untouched.
 
-      * Main layer      : analysed only, passed through a matching delay line.
-      * Sidechain A / B : re-synthesised after per-bin gain carving.
+    STFT: 2048-point (1024 in Eco mode), 75 % overlap, periodic Hann, weighted
+    overlap-add. Latency = fftSize samples, reported to the host.
 
-    The carve gain per bin is derived from a Wiener-style "collision mask"
-    against the (attack/release smoothed) main-layer energy:
+    Per bin:  mask = refE / (refE + mainE)   (Wiener-style, ->1 where the
+    priority source dominates), gain = 1 - depth * mask, with attack/release
+    and spectral smoothing against musical noise.
 
-        mask = mainE / (mainE + sideE)        -> 1 where the main dominates
-        gain = 1 - depth * mask
-
-    Only magnitudes are attenuated — the sidechain phases are never touched,
-    so the carving itself introduces no phase distortion.
-
-    Latency is exactly fftSize samples on all three paths and is reported to
-    the host, so FL Studio's PDC keeps everything sample-aligned.
+    CPU design for weak machines:
+      * reference FFTs are skipped entirely while that sidechain is silent or
+        disconnected (block-level gate with hold, driven by the processor);
+      * the main resynthesis chain always runs, so idle<->active transitions
+        are glitch-free;
+      * the two channel engines are hop-staggered so their FFT bursts never
+        land in the same audio callback;
+      * windowing / overlap-add use SIMD (FloatVectorOperations).
 */
-class SpectralEngine
+class CarveEngine
 {
 public:
-    static constexpr int fftOrder = 11;
-    static constexpr int fftSize  = 1 << fftOrder;      // 2048
-    static constexpr int hopSize  = fftSize / 4;        // 512 -> 75 % overlap
-    static constexpr int numBins  = fftSize / 2 + 1;    // 1025
+    static constexpr int maxOrder   = 11;
+    static constexpr int maxFftSize = 1 << maxOrder;        // 2048
+    static constexpr int maxBins    = maxFftSize / 2 + 1;   // 1025
 
-    /** Optional per-bin taps for the UI visualiser (arrays of numBins atomics,
-        owned by the processor; written with relaxed stores on the audio thread). */
     struct DisplayTap
     {
-        std::atomic<float>* mainMag = nullptr;
-        std::atomic<float>* sideMag = nullptr;
-        std::atomic<float>* carve   = nullptr;
+        std::atomic<float>* refMag  = nullptr;   // priority spectrum (combined)
+        std::atomic<float>* mainMag = nullptr;   // main content, pre-carve
+        std::atomic<float>* carve   = nullptr;   // 1 - gain per bin
     };
 
-    SpectralEngine();
+    CarveEngine() = default;
 
-    void prepare (double sampleRate);
+    void prepare (double sampleRate, int fftOrder, bool staggerHalfHop);
+    void setOrder (int newOrder);                 // audio thread, between blocks
     void reset() noexcept;
 
-    void setDepth (float newDepth) noexcept           { targetDepth = newDepth; }
-    void setDisplayTap (const DisplayTap& t) noexcept { tap = t; }
+    void setDepth (float d) noexcept                    { targetDepth = d; }
+    void setSmoothness (float s) noexcept               { smoothness = s; }
+    void setRefsActive (bool a, bool b) noexcept        { refAOn = a; refBOn = b; }
+    void setDisplayTap (const DisplayTap& t) noexcept   { tap = t; }
 
-    /** Push one sample of each layer, receive the three aligned outputs
-        (each exactly fftSize samples late). */
-    void processSample (float mainIn, float sideAIn, float sideBIn,
-                        float& mainOut, float& sideAOut, float& sideBOut) noexcept;
+    /** Average linear gain applied to the main energy in the last frame (1 = no carving). */
+    float getCarvedGainLin() const noexcept             { return carvedGainLin; }
+
+    /** dryOut = delay-aligned input, wetOut = carved resynthesis (same latency). */
+    void processSample (float mainIn, float refAIn, float refBIn,
+                        float& dryOut, float& wetOut) noexcept;
 
 private:
+    void applyOrder (int newOrder);
     void processFrame() noexcept;
 
-    juce::dsp::FFT fft { fftOrder };
-    std::array<float, fftSize> window {};
+    juce::dsp::FFT fftBig { maxOrder };
+    juce::dsp::FFT fftEco { maxOrder - 1 };
+    juce::dsp::FFT* fft = &fftBig;
 
-    int pos      = 0;   // shared circular write/read index
-    int hopCount = 0;
+    double sr = 48000.0;
+    int order   = maxOrder;
+    int fftSize = maxFftSize;
+    int hopSize = maxFftSize / 4;
+    int numBins = maxBins;
+    bool stagger = false;
 
-    std::array<float, fftSize> mainFifo {}, sideFifoA {}, sideFifoB {};
-    std::array<float, fftSize> mainDelay {};            // dry main alignment
-    std::array<float, fftSize> olaA {}, olaB {};        // overlap-add accumulators
+    std::array<float, maxFftSize> window {}, synthWindow {};
 
-    std::array<float, fftSize * 2> mainFrame {}, frameA {}, frameB {};
+    int pos = 0, hopCount = 0;
 
-    std::array<float, numBins> mainEnergy {};           // smoothed main energy
-    std::array<float, numBins> gainA {}, gainB {};      // time-smoothed gains
-    std::array<float, numBins> targetA {}, targetB {};
-    std::array<float, numBins> smoothA {}, smoothB {};  // frequency-smoothed gains
+    std::array<float, maxFftSize> mainFifo {}, refFifoA {}, refFifoB {};
+    std::array<float, maxFftSize> mainDelay {}, ola {};
 
-    float depth = 0.0f, targetDepth = 0.0f;
-    float energyAttack = 0.6f, energyRelease = 0.12f;
-    float gainAttack   = 0.5f, gainRelease   = 0.12f;
+    std::array<float, maxFftSize * 2> mainFrame {}, refFrame {};
+    std::array<float, maxFftSize> scratch {};
+
+    std::array<float, maxBins> refEAccum {}, refEnergySm {};
+    std::array<float, maxBins> gain {}, gTarget {}, gSmooth {};
+
+    float depth = 0.0f, targetDepth = 0.0f, smoothness = 0.5f;
+    bool refAOn = false, refBOn = false;
+    float engAtk = 0.6f, engRel = 0.12f, gAtk = 0.5f;
+    float carvedGainLin = 1.0f;
 
     DisplayTap tap;
 };
 
 //==============================================================================
-class JeDExSymbiosisAudioProcessor : public juce::AudioProcessor
+class CarveAudioProcessor : public juce::AudioProcessor,
+                            private juce::Timer
 {
 public:
-    JeDExSymbiosisAudioProcessor();
-    ~JeDExSymbiosisAudioProcessor() override = default;
+    CarveAudioProcessor();
+    ~CarveAudioProcessor() override;
 
     //==========================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -100,19 +117,19 @@ public:
 
     //==========================================================================
     juce::AudioProcessorEditor* createEditor() override;
-    bool hasEditor() const override                            { return true; }
+    bool hasEditor() const override                     { return true; }
 
     //==========================================================================
-    const juce::String getName() const override    { return "JeDEx Symbiosis"; }
-    bool acceptsMidi() const override              { return false; }
-    bool producesMidi() const override             { return false; }
-    bool isMidiEffect() const override             { return false; }
-    double getTailLengthSeconds() const override   { return 0.0; }
+    const juce::String getName() const override         { return "JeDEx CARVE"; }
+    bool acceptsMidi() const override                   { return false; }
+    bool producesMidi() const override                  { return false; }
+    bool isMidiEffect() const override                  { return false; }
+    double getTailLengthSeconds() const override        { return 0.0; }
 
-    int getNumPrograms() override                  { return 1; }
-    int getCurrentProgram() override               { return 0; }
-    void setCurrentProgram (int) override          {}
-    const juce::String getProgramName (int) override        { return {}; }
+    int getNumPrograms() override                       { return 1; }
+    int getCurrentProgram() override                    { return 0; }
+    void setCurrentProgram (int) override               {}
+    const juce::String getProgramName (int) override    { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
     //==========================================================================
@@ -120,11 +137,17 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     //==========================================================================
-    static constexpr int kNumBins = SpectralEngine::numBins;
+    static constexpr int kNumBins = CarveEngine::maxBins;
 
-    // Visualiser taps (left-channel analysis), read by the editor at ~30 Hz.
+    // Sidechain / carving state for the UI:
+    // 0 = no sidechain connected, 1 = connected but silent, 2 = carving.
+    std::atomic<int>   uiState { 0 };
+    std::atomic<float> uiCarvedDb { 0.0f };     // average gain reduction, dB (<= 0)
+    std::atomic<int>   uiFftSize { CarveEngine::maxFftSize };
+
+    // Visualiser taps (left-channel engine), read by the editor timer.
+    std::array<std::atomic<float>, kNumBins> displayRef;
     std::array<std::atomic<float>, kNumBins> displayMain;
-    std::array<std::atomic<float>, kNumBins> displaySide;
     std::array<std::atomic<float>, kNumBins> displayCarve;
 
     juce::AudioProcessorValueTreeState apvts;
@@ -132,8 +155,23 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    std::atomic<float>* symbiosisParam = nullptr;
-    SpectralEngine engines[2];
+    // Latency changes (Eco switch) are detected on the audio thread but reported
+    // to the host from the message thread — setLatencySamples takes a lock and
+    // posts a system message, neither of which belongs in the audio callback.
+    void timerCallback() override;
+    std::atomic<int> pendingLatency { -1 };
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JeDExSymbiosisAudioProcessor)
+    std::atomic<float>* amountParam = nullptr;
+    std::atomic<float>* smoothParam = nullptr;
+    std::atomic<float>* mixParam    = nullptr;
+    std::atomic<float>* outputParam = nullptr;
+    std::atomic<float>* ecoParam    = nullptr;
+
+    juce::SmoothedValue<float> mixSm, outSm;
+
+    CarveEngine engines[2];
+    int curOrder = CarveEngine::maxOrder;
+    int holdA = 0, holdB = 0;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CarveAudioProcessor)
 };

@@ -1,182 +1,301 @@
 #include "PluginEditor.h"
+#include "BinaryData.h"
 
-using namespace symbiosis;
+using namespace carve;
 
 //==============================================================================
-// SymbiosisLookAndFeel — machined-metal rotary with lit tick ring
+// CarveLookAndFeel
 //==============================================================================
-void SymbiosisLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y,
-                                             int width, int height,
-                                             float sliderPos, float rotaryStartAngle,
-                                             float rotaryEndAngle, juce::Slider& slider)
+void CarveLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y,
+                                         int width, int height,
+                                         float sliderPos, float rotaryStartAngle,
+                                         float rotaryEndAngle, juce::Slider& slider)
 {
-    const auto bounds = juce::Rectangle<float> ((float) x, (float) y,
-                                                (float) width, (float) height).reduced (10.0f);
-    const auto centre = bounds.getCentre();
-    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    const auto all = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
+    const auto labelStrip = all.withTop (all.getBottom() - 16.0f);
+    const auto knobArea   = all.withTrimmedBottom (18.0f);
+
+    const auto centre = knobArea.getCentre();
+    const float radius = juce::jmin (knobArea.getWidth(), knobArea.getHeight()) * 0.5f - 8.0f;
     const float angle  = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    const bool  big    = radius > 52.0f;
 
-    // ---- tick ring (outside the value arc) -----------------------------------------
-    constexpr int numTicks = 25;
-    for (int i = 0; i < numTicks; ++i)
+    const juce::String valueText = slider.getTextFromValue (slider.getValue());
+
+    if (big)
     {
-        const float t = (float) i / (float) (numTicks - 1);
-        const float a = rotaryStartAngle + t * (rotaryEndAngle - rotaryStartAngle);
-        const bool lit = a <= angle + 0.001f;
+        // ---- tick ring ------------------------------------------------------------
+        constexpr int numTicks = 21;
+        for (int i = 0; i < numTicks; ++i)
+        {
+            const float t = (float) i / (float) (numTicks - 1);
+            const float a = rotaryStartAngle + t * (rotaryEndAngle - rotaryStartAngle);
+            const bool lit = a <= angle + 0.001f;
+            g.setColour (lit ? colours::ref.interpolatedWith (colours::bus, t).withAlpha (0.85f)
+                             : juce::Colour (0xff26282f));
+            g.drawLine (juce::Line<float> (centre.getPointOnCircumference (radius + 3.0f, a),
+                                           centre.getPointOnCircumference (radius + 7.0f, a)),
+                        lit ? 1.8f : 1.2f);
+        }
 
-        g.setColour (lit ? colours::neonBlue.interpolatedWith (colours::neonPurple, t)
-                               .withAlpha (0.85f)
-                         : juce::Colour (0xff2a2c33));
-        g.drawLine (juce::Line<float> (centre.getPointOnCircumference (radius + 3.0f, a),
-                                       centre.getPointOnCircumference (radius + 7.0f, a)),
-                    lit ? 1.8f : 1.2f);
-    }
-
-    // ---- value arc -----------------------------------------------------------------
-    const float arcR = radius - 4.0f;
-    {
+        // ---- value arc ------------------------------------------------------------
+        const float arcR = radius - 3.0f;
         juce::Path track;
         track.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f,
                              rotaryStartAngle, rotaryEndAngle, true);
         g.setColour (juce::Colour (0xff191b20));
-        g.strokePath (track, juce::PathStrokeType (3.5f, juce::PathStrokeType::curved,
+        g.strokePath (track, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
 
         juce::Path value;
         value.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f,
                              rotaryStartAngle, angle, true);
-
-        g.setColour (colours::neonBlue.withAlpha (0.16f));   // glow pass
-        g.strokePath (value, juce::PathStrokeType (9.0f, juce::PathStrokeType::curved,
+        g.setColour (colours::ref.withAlpha (0.15f));
+        g.strokePath (value, juce::PathStrokeType (8.0f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
-
-        juce::ColourGradient grad (colours::neonBlue,
-                                   centre.x - radius, centre.y + radius,
-                                   colours::neonPurple,
-                                   centre.x + radius, centre.y - radius, false);
+        juce::ColourGradient grad (colours::ref, centre.x - radius, centre.y + radius,
+                                   colours::bus, centre.x + radius, centre.y - radius, false);
         g.setGradientFill (grad);
-        g.strokePath (value, juce::PathStrokeType (3.5f, juce::PathStrokeType::curved,
+        g.strokePath (value, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::rounded));
+
+        // ---- metallic body --------------------------------------------------------
+        const float bodyR = radius * 0.74f;
+        const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (centre);
+
+        {
+            juce::Path shadowPath;
+            shadowPath.addEllipse (body);
+            juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 18, { 0, 6 })
+                .drawForPath (g, shadowPath);
+        }
+        {
+            juce::ColourGradient bezel (juce::Colour (0xff484b53), centre.x, body.getY(),
+                                        juce::Colour (0xff0b0c0f), centre.x, body.getBottom(), false);
+            g.setGradientFill (bezel);
+            g.fillEllipse (body);
+        }
+        for (int i = 0; i < 40; ++i)   // knurled grip
+        {
+            const float a = juce::MathConstants<float>::twoPi * (float) i / 40.0f;
+            g.setColour (juce::Colours::black.withAlpha (0.28f));
+            g.drawLine (juce::Line<float> (centre.getPointOnCircumference (bodyR * 0.92f, a),
+                                           centre.getPointOnCircumference (bodyR * 0.99f, a)), 1.3f);
+        }
+
+        const auto face = body.reduced (bodyR * 0.11f);
+        const float faceR = face.getWidth() * 0.5f;
+        {
+            juce::ColourGradient faceGrad (juce::Colour (0xff26282f),
+                                           centre.x - bodyR * 0.4f, centre.y - bodyR * 0.5f,
+                                           juce::Colour (0xff0d0e11),
+                                           centre.x + bodyR * 0.5f, centre.y + bodyR * 0.7f, true);
+            g.setGradientFill (faceGrad);
+            g.fillEllipse (face);
+        }
+        for (int i = 0; i < 60; ++i)   // brushed hairlines
+        {
+            const float a = juce::MathConstants<float>::twoPi * (float) i / 60.0f;
+            const float alpha = 0.012f + 0.02f * (0.5f + 0.5f * std::sin ((float) i * 12.9898f));
+            g.setColour (juce::Colours::white.withAlpha (alpha));
+            g.drawLine (juce::Line<float> (centre.getPointOnCircumference (faceR * 0.34f, a),
+                                           centre.getPointOnCircumference (faceR * 0.96f, a)), 1.0f);
+        }
+
+        // pointer
+        {
+            const auto inner = centre.getPointOnCircumference (faceR * 0.58f, angle);
+            const auto outer = centre.getPointOnCircumference (faceR * 0.90f, angle);
+            g.setColour (colours::ref.withAlpha (0.22f));
+            g.drawLine (juce::Line<float> (inner, outer), 5.0f);
+            g.setColour (colours::ref);
+            g.drawLine (juce::Line<float> (inner, outer), 2.0f);
+        }
+
+        // centre read-out
+        g.setColour (juce::Colours::white.withAlpha (0.88f));
+        g.setFont (juce::Font (juce::FontOptions (21.0f)).withExtraKerningFactor (0.04f));
+        g.drawText (valueText, body.toNearestInt(), juce::Justification::centred);
     }
-
-    // ---- body: drop shadow, bezel, knurl, face -------------------------------------
-    const float bodyR = radius * 0.76f;
-    const auto body = juce::Rectangle<float> (bodyR * 2.0f, bodyR * 2.0f).withCentre (centre);
-
+    else
     {
-        juce::Path shadowPath;
-        shadowPath.addEllipse (body);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 22, { 0, 8 })
-            .drawForPath (g, shadowPath);
-    }
-
-    {
-        juce::ColourGradient bezel (juce::Colour (0xff484b53), centre.x, body.getY(),
-                                    juce::Colour (0xff0b0c0f), centre.x, body.getBottom(), false);
-        g.setGradientFill (bezel);
-        g.fillEllipse (body);
-
-        // thin rim light on the upper edge
-        juce::Path rim;
-        rim.addCentredArc (centre.x, centre.y, bodyR - 0.8f, bodyR - 0.8f, 0.0f,
-                           -2.4f, -0.6f, true);
-        g.setColour (juce::Colours::white.withAlpha (0.20f));
-        g.strokePath (rim, juce::PathStrokeType (1.2f));
-    }
-
-    // knurled grip on the bezel ring
-    for (int i = 0; i < 48; ++i)
-    {
-        const float a = juce::MathConstants<float>::twoPi * (float) i / 48.0f;
-        g.setColour (juce::Colours::black.withAlpha (0.28f));
-        g.drawLine (juce::Line<float> (centre.getPointOnCircumference (bodyR * 0.92f, a),
-                                       centre.getPointOnCircumference (bodyR * 0.99f, a)), 1.4f);
-    }
-
-    const auto face = body.reduced (bodyR * 0.11f);
-    const float faceR = face.getWidth() * 0.5f;
-    {
-        juce::ColourGradient faceGrad (juce::Colour (0xff26282f),
-                                       centre.x - bodyR * 0.4f, centre.y - bodyR * 0.5f,
-                                       juce::Colour (0xff0d0e11),
-                                       centre.x + bodyR * 0.5f, centre.y + bodyR * 0.7f, true);
-        g.setGradientFill (faceGrad);
+        // ---- flat small knob ------------------------------------------------------
+        const auto face = juce::Rectangle<float> (radius * 2.0f, radius * 2.0f).withCentre (centre);
+        g.setColour (juce::Colour (0xff15161b));
         g.fillEllipse (face);
+        g.setColour (juce::Colours::white.withAlpha (0.07f));
+        g.drawEllipse (face, 1.0f);
+
+        const float arcR = radius + 4.0f;
+        juce::Path track;
+        track.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f,
+                             rotaryStartAngle, rotaryEndAngle, true);
+        g.setColour (juce::Colour (0xff191b20));
+        g.strokePath (track, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+
+        juce::Path value;
+        value.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f,
+                             rotaryStartAngle, angle, true);
+        juce::ColourGradient grad (colours::ref, centre.x - arcR, centre.y + arcR,
+                                   colours::bus, centre.x + arcR, centre.y - arcR, false);
+        g.setGradientFill (grad);
+        g.strokePath (value, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+
+        const auto tip = centre.getPointOnCircumference (radius * 0.78f, angle);
+        g.setColour (colours::ref);
+        g.fillEllipse (juce::Rectangle<float> (4.0f, 4.0f).withCentre (tip));
+
+        g.setColour (juce::Colours::white.withAlpha (0.80f));
+        g.setFont (juce::Font (juce::FontOptions (10.5f)));
+        g.drawText (valueText, face.toNearestInt(), juce::Justification::centred);
     }
 
-    // brushed-metal hairlines (deterministic pseudo-random alpha)
-    for (int i = 0; i < 84; ++i)
+    g.setColour (juce::Colours::white.withAlpha (0.42f));
+    g.setFont (juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.28f));
+    g.drawText (slider.getName(), labelStrip.toNearestInt(), juce::Justification::centred);
+}
+
+void CarveLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                                         bool highlighted, bool)
+{
+    const auto b = button.getLocalBounds().toFloat();
+    const bool on = button.getToggleState();
+
+    const auto pill = juce::Rectangle<float> (44.0f, 22.0f)
+                          .withCentre ({ b.getX() + 24.0f, b.getCentreY() });
+
+    g.setColour (on ? colours::active.withAlpha (0.22f) : juce::Colour (0xff17181c));
+    g.fillRoundedRectangle (pill, 11.0f);
+    g.setColour (on ? colours::active.withAlpha (0.85f)
+                    : juce::Colours::white.withAlpha (highlighted ? 0.25f : 0.14f));
+    g.drawRoundedRectangle (pill, 11.0f, 1.2f);
+
+    const float thumbX = on ? pill.getRight() - 12.0f : pill.getX() + 12.0f;
+    if (on)
     {
-        const float a = juce::MathConstants<float>::twoPi * (float) i / 84.0f;
-        const float alpha = 0.012f + 0.020f * (0.5f + 0.5f * std::sin ((float) i * 12.9898f));
-        g.setColour (juce::Colours::white.withAlpha (alpha));
-        g.drawLine (juce::Line<float> (centre.getPointOnCircumference (faceR * 0.34f, a),
-                                       centre.getPointOnCircumference (faceR * 0.97f, a)), 1.0f);
+        g.setColour (colours::active.withAlpha (0.30f));
+        g.fillEllipse (juce::Rectangle<float> (22.0f, 22.0f).withCentre ({ thumbX, pill.getCentreY() }));
     }
+    g.setColour (on ? colours::active : juce::Colour (0xff5a5d66));
+    g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ thumbX, pill.getCentreY() }));
 
-    // diagonal sheen + glass highlight
-    {
-        juce::ColourGradient sheen (juce::Colours::white.withAlpha (0.06f),
-                                    face.getX(), face.getY(),
-                                    juce::Colours::transparentWhite,
-                                    centre.x, centre.y, false);
-        g.setGradientFill (sheen);
-        g.fillEllipse (face);
+    g.setColour (juce::Colours::white.withAlpha (on ? 0.85f : 0.45f));
+    g.setFont (juce::Font (juce::FontOptions (10.5f)).withExtraKerningFactor (0.24f));
+    g.drawText (button.getButtonText(),
+                b.withTrimmedLeft (56.0f).toNearestInt(), juce::Justification::centredLeft);
+}
 
-        auto glass = face.withHeight (face.getHeight() * 0.46f).reduced (faceR * 0.20f, 0.0f);
-        juce::ColourGradient glassGrad (juce::Colours::white.withAlpha (0.08f),
-                                        glass.getCentreX(), glass.getY(),
-                                        juce::Colours::transparentWhite,
-                                        glass.getCentreX(), glass.getBottom(), false);
-        g.setGradientFill (glassGrad);
-        g.fillEllipse (glass);
-    }
+void CarveLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                                             const juce::Colour&, bool highlighted, bool down)
+{
+    const auto b = button.getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (juce::Colours::white.withAlpha (down ? 0.10f : (highlighted ? 0.07f : 0.03f)));
+    g.fillRoundedRectangle (b, 6.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.14f));
+    g.drawRoundedRectangle (b, 6.0f, 1.0f);
+}
 
-    // ---- pointer -------------------------------------------------------------------
-    {
-        const auto inner = centre.getPointOnCircumference (faceR * 0.58f, angle);
-        const auto outer = centre.getPointOnCircumference (faceR * 0.90f, angle);
-        g.setColour (colours::neonBlue.withAlpha (0.22f));
-        g.drawLine (juce::Line<float> (inner, outer), 6.0f);
-        g.setColour (colours::neonBlue);
-        g.drawLine (juce::Line<float> (inner, outer), 2.2f);
-        g.fillEllipse (juce::Rectangle<float> (5.0f, 5.0f).withCentre (outer));
-    }
-
-    // ---- centre read-out -----------------------------------------------------------
-    g.setColour (juce::Colours::white.withAlpha (0.88f));
-    g.setFont (juce::Font (juce::FontOptions (24.0f)).withExtraKerningFactor (0.04f));
-    g.drawText (juce::String (juce::roundToInt (slider.getValue() * 100.0)) + "%",
-                body.translated (0.0f, -8.0f).toNearestInt(), juce::Justification::centred);
-
-    g.setColour (juce::Colours::white.withAlpha (0.30f));
-    g.setFont (juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.32f));
-    g.drawText ("SYMBIOSIS", body.translated (0.0f, 17.0f).toNearestInt(),
-                juce::Justification::centred);
+void CarveLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button, bool, bool)
+{
+    g.setColour (juce::Colours::white.withAlpha (0.75f));
+    g.setFont (juce::Font (juce::FontOptions (10.5f)).withExtraKerningFactor (0.22f));
+    g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred);
 }
 
 //==============================================================================
-// RadarVisualizer
+// SpectrumView
 //==============================================================================
-RadarVisualizer::RadarVisualizer (JeDExSymbiosisAudioProcessor& p)
-    : processor (p)
+namespace
+{
+    constexpr float kFLo = 30.0f, kFHi = 16000.0f;
+
+    float freqToNorm (float f)
+    {
+        return std::log (f / kFLo) / std::log (kFHi / kFLo);
+    }
+}
+
+SpectrumView::SpectrumView (CarveAudioProcessor& p) : processor (p)
 {
     setInterceptsMouseClicks (false, false);
     startTimerHz (30);
 }
 
-RadarVisualizer::~RadarVisualizer()
+SpectrumView::~SpectrumView()
 {
     stopTimer();
 }
 
-void RadarVisualizer::timerCallback()
+void SpectrumView::resized()
+{
+    bgCache = juce::Image();
+}
+
+void SpectrumView::rebuildBackground()
+{
+    const int w = getWidth(), h = getHeight();
+    if (w <= 0 || h <= 0)
+        return;
+
+    bgCache = juce::Image (juce::Image::ARGB, w, h, true);
+    juce::Graphics g (bgCache);
+
+    const auto frame = juce::Rectangle<float> (0, 0, (float) w, (float) h);
+    g.setColour (colours::panel);
+    g.fillRoundedRectangle (frame, 10.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.drawRoundedRectangle (frame.reduced (0.5f), 10.0f, 1.0f);
+
+    const auto plot = frame.reduced (14.0f, 12.0f);
+
+    // frequency grid + labels
+    const struct { float f; const char* t; } marks[] = {
+        { 50, "50" }, { 100, "100" }, { 200, "200" }, { 500, "500" },
+        { 1000, "1K" }, { 2000, "2K" }, { 5000, "5K" }, { 10000, "10K" } };
+
+    g.setFont (juce::Font (juce::FontOptions (8.5f)));
+    for (const auto& m : marks)
+    {
+        const float xx = plot.getX() + freqToNorm (m.f) * plot.getWidth();
+        g.setColour (juce::Colours::white.withAlpha (0.05f));
+        g.drawLine (xx, plot.getY() + 6.0f, xx, plot.getBottom() - 14.0f, 1.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.30f));
+        g.drawText (m.t, (int) xx - 14, (int) plot.getBottom() - 12, 28, 10,
+                    juce::Justification::centred);
+    }
+
+    // centre line
+    g.setColour (juce::Colours::white.withAlpha (0.08f));
+    g.drawLine (plot.getX(), plot.getCentreY(), plot.getRight(), plot.getCentreY(), 1.0f);
+
+    // legend
+    const struct { juce::Colour c; const char* t; int w; } legend[] = {
+        { colours::ref,    "PRIORITY", 62 },
+        { colours::bus,    "YOUR MIX", 62 },
+        { colours::carved, "CARVED",   50 } };
+
+    int lx = (int) plot.getX() + 4;
+    const int ly = (int) plot.getY() + 4;
+    g.setFont (juce::Font (juce::FontOptions (9.0f)).withExtraKerningFactor (0.18f));
+    for (const auto& e : legend)
+    {
+        g.setColour (e.c.withAlpha (0.9f));
+        g.fillEllipse ((float) lx, (float) ly + 3.0f, 6.0f, 6.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.42f));
+        g.drawText (e.t, lx + 10, ly, e.w, 12, juce::Justification::centredLeft);
+        lx += 10 + e.w + 10;
+    }
+}
+
+void SpectrumView::timerCallback()
 {
     const double sr = processor.getSampleRate() > 0.0 ? processor.getSampleRate() : 48000.0;
-    const float binHz = (float) (sr / (double) SpectralEngine::fftSize);
-
-    constexpr float fLo = 30.0f, fHi = 16000.0f;
-    const float magRef = (float) SpectralEngine::fftSize * 0.25f;   // full-scale sine peak
+    const int fftSize = processor.uiFftSize.load();
+    const int numBins = fftSize / 2 + 1;
+    const float binHz = (float) (sr / (double) fftSize);
+    const float magRef = (float) fftSize * 0.25f;
 
     auto toNorm = [magRef] (float mag)
     {
@@ -184,295 +303,321 @@ void RadarVisualizer::timerCallback()
         return juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
     };
 
-    for (int i = 0; i < kPoints; ++i)
+    for (int i = 0; i < kPts; ++i)
     {
-        const float t0 = (float) i       / (float) kPoints;
-        const float t1 = (float) (i + 1) / (float) kPoints;
+        const float t0 = (float) i       / (float) kPts;
+        const float t1 = (float) (i + 1) / (float) kPts;
 
-        int b0 = (int) (fLo * std::pow (fHi / fLo, t0) / binHz);
-        int b1 = (int) (fLo * std::pow (fHi / fLo, t1) / binHz);
-        b0 = juce::jlimit (1, SpectralEngine::numBins - 1, b0);
-        b1 = juce::jlimit (b0 + 1, SpectralEngine::numBins, b1);
+        int b0 = (int) (kFLo * std::pow (kFHi / kFLo, t0) / binHz);
+        int b1 = (int) (kFLo * std::pow (kFHi / kFLo, t1) / binHz);
+        b0 = juce::jlimit (1, numBins - 1, b0);
+        b1 = juce::jlimit (b0 + 1, numBins, b1);
 
-        float m = 0.0f, s = 0.0f, c = 0.0f;
+        float r = 0.0f, m = 0.0f, c = 0.0f;
         for (int b = b0; b < b1; ++b)
         {
+            r = juce::jmax (r, processor.displayRef[(size_t) b].load (std::memory_order_relaxed));
             m = juce::jmax (m, processor.displayMain[(size_t) b].load (std::memory_order_relaxed));
-            s = juce::jmax (s, processor.displaySide[(size_t) b].load (std::memory_order_relaxed));
             c = juce::jmax (c, processor.displayCarve[(size_t) b].load (std::memory_order_relaxed));
         }
 
-        // Temporal easing keeps the radar fluid at 30 fps.
-        mainCurve[(size_t) i]  += 0.45f * (toNorm (m) - mainCurve[(size_t) i]);
-        sideCurve[(size_t) i]  += 0.45f * (toNorm (s) - sideCurve[(size_t) i]);
-        carveCurve[(size_t) i] += 0.50f * (c          - carveCurve[(size_t) i]);
+        refCurve[(size_t) i]   += 0.5f * (toNorm (r) - refCurve[(size_t) i]);
+        mainCurve[(size_t) i]  += 0.5f * (toNorm (m) - mainCurve[(size_t) i]);
+        carveCurve[(size_t) i] += 0.5f * (c          - carveCurve[(size_t) i]);
     }
 
-    sweepPhase = std::fmod (sweepPhase + 0.035f, juce::MathConstants<float>::twoPi);
     repaint();
 }
 
-void RadarVisualizer::paint (juce::Graphics& g)
+void SpectrumView::paint (juce::Graphics& g)
 {
-    const auto centre = getLocalBounds().getCentre().toFloat();
-    const float outerR = (float) juce::jmin (getWidth(), getHeight()) * 0.5f - 50.0f;
-    const float innerR = kInnerRadius;
+    if (! bgCache.isValid())
+        rebuildBackground();
+    g.drawImageAt (bgCache, 0, 0);
 
-    if (outerR <= innerR)
-        return;
+    const auto plot = getLocalBounds().toFloat().reduced (14.0f, 12.0f);
+    const float cy = plot.getCentreY();
+    const float H2 = plot.getHeight() * 0.5f - 22.0f;
+    const bool eco = processor.apvts.getRawParameterValue ("eco")->load() > 0.5f;
 
-    constexpr float fLo = 30.0f, fHi = 16000.0f;
-
-    // ---- HUD chrome: tick ring, outer circle, frequency markers --------------------
-    for (int i = 0; i < 72; ++i)
+    auto xAt = [&plot] (int i)
     {
-        const float a = juce::MathConstants<float>::twoPi * (float) i / 72.0f;
-        const bool major = (i % 6 == 0);
-        g.setColour (juce::Colours::white.withAlpha (major ? 0.10f : 0.045f));
-        g.drawLine (juce::Line<float> (centre.getPointOnCircumference (outerR + 6.0f, a),
-                                       centre.getPointOnCircumference (outerR + (major ? 14.0f : 10.0f), a)),
-                    1.0f);
-    }
-
-    g.setColour (juce::Colours::white.withAlpha (0.07f));
-    g.drawEllipse (juce::Rectangle<float> ((outerR + 2.0f) * 2.0f, (outerR + 2.0f) * 2.0f)
-                       .withCentre (centre), 1.0f);
-
-    {
-        g.setFont (juce::Font (juce::FontOptions (9.0f)).withExtraKerningFactor (0.10f));
-        g.setColour (juce::Colours::white.withAlpha (0.28f));
-        const std::pair<float, const char*> marks[] = { { 100.0f,   "100" },
-                                                        { 1000.0f,  "1K"  },
-                                                        { 10000.0f, "10K" } };
-        for (const auto& mark : marks)
-        {
-            const float a = juce::MathConstants<float>::twoPi
-                          * std::log (mark.first / fLo) / std::log (fHi / fLo);
-            const auto pos = centre.getPointOnCircumference (outerR + 24.0f, a);
-            g.drawText (mark.second,
-                        juce::Rectangle<float> (30.0f, 12.0f).withCentre (pos).toNearestInt(),
-                        juce::Justification::centred);
-        }
-    }
-
-    // Faint concentric grid.
-    g.setColour (juce::Colours::white.withAlpha (0.040f));
-    for (float f : { 0.25f, 0.5f, 0.75f, 1.0f })
-    {
-        const float r = innerR + f * (outerR - innerR);
-        g.drawEllipse (juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (centre), 1.0f);
-    }
-
-    // ---- rotating sweep with fading trail ------------------------------------------
-    for (int j = 13; j >= 0; --j)
-    {
-        const float a = sweepPhase - 0.030f * (float) j;
-        const float alpha = 0.11f * (1.0f - (float) j / 14.0f);
-        g.setColour (colours::neonBlue.withAlpha (alpha));
-        g.drawLine (juce::Line<float> (centre.getPointOnCircumference (innerR, a),
-                                       centre.getPointOnCircumference (outerR, a)),
-                    j == 0 ? 2.0f : 1.5f);
-    }
-
-    // ---- helpers -------------------------------------------------------------------
-    auto radiusFor = [innerR, outerR] (float v)
-    {
-        return innerR + juce::jlimit (0.0f, 1.0f, v) * (outerR - innerR);
+        return plot.getX() + plot.getWidth() * (float) i / (float) (kPts - 1);
     };
 
-    auto pointAt = [&centre] (int i, float r)
+    // Smoothed mirrored area around the centre line.
+    auto areaPath = [&] (const std::array<float, kPts>& v)
     {
-        const float a = juce::MathConstants<float>::twoPi * (float) i / (float) kPoints;
-        return centre.getPointOnCircumference (r, a);
-    };
-
-    // Smooth closed ring through the data points (quadratic midpoint interpolation).
-    auto buildSmoothRing = [&] (const std::array<float, kPoints>& data)
-    {
-        std::array<juce::Point<float>, kPoints> pts;
-        for (int i = 0; i < kPoints; ++i)
-            pts[(size_t) i] = pointAt (i, radiusFor (data[(size_t) i]));
-
         juce::Path p;
-        p.startNewSubPath ((pts[(size_t) (kPoints - 1)] + pts[0]) * 0.5f);
-        for (int i = 0; i < kPoints; ++i)
-        {
-            const auto& cur = pts[(size_t) i];
-            const auto& nxt = pts[(size_t) ((i + 1) % kPoints)];
-            p.quadraticTo (cur, (cur + nxt) * 0.5f);
-        }
+        p.startNewSubPath (xAt (0), cy - v[0] * H2);
+        for (int i = 1; i < kPts; ++i)
+            p.quadraticTo (xAt (i - 1), cy - v[(size_t) (i - 1)] * H2,
+                           0.5f * (xAt (i - 1) + xAt (i)),
+                           cy - 0.5f * (v[(size_t) (i - 1)] + v[(size_t) i]) * H2);
+        p.lineTo (xAt (kPts - 1), cy - v[(size_t) (kPts - 1)] * H2);
+        p.lineTo (xAt (kPts - 1), cy + v[(size_t) (kPts - 1)] * H2);
+        for (int i = kPts - 1; i > 0; --i)
+            p.quadraticTo (xAt (i), cy + v[(size_t) i] * H2,
+                           0.5f * (xAt (i - 1) + xAt (i)),
+                           cy + 0.5f * (v[(size_t) (i - 1)] + v[(size_t) i]) * H2);
         p.closeSubPath();
         return p;
     };
 
-    // ---- carved spectrum: radial magenta rays under everything ---------------------
-    for (int i = 0; i < kPoints; ++i)
+    // Band between an outer and an inner curve, on one side of the centre line.
+    auto ribbonPath = [&] (const std::array<float, kPts>& outer,
+                           const std::array<float, kPts>& inner, float sign)
     {
-        const float c = carveCurve[(size_t) i];
-        if (c > 0.10f)
+        juce::Path p;
+        p.startNewSubPath (xAt (0), cy + sign * outer[0] * H2);
+        for (int i = 1; i < kPts; ++i)
+            p.lineTo (xAt (i), cy + sign * outer[(size_t) i] * H2);
+        for (int i = kPts - 1; i >= 0; --i)
+            p.lineTo (xAt (i), cy + sign * inner[(size_t) i] * H2);
+        p.closeSubPath();
+        return p;
+    };
+
+    // ---- priority sources (blue) --------------------------------------------------
+    {
+        const auto p = areaPath (refCurve);
+        juce::ColourGradient fill (colours::ref.withAlpha (0.26f), plot.getX(), cy,
+                                   colours::ref.withAlpha (0.04f), plot.getX(), plot.getY(), false);
+        g.setGradientFill (fill);
+        g.fillPath (p);
+        g.setColour (colours::ref.withAlpha (0.85f));
+        g.strokePath (p, juce::PathStrokeType (1.4f));
+    }
+
+    // ---- your content, post-carve (purple) + carved band (magenta) ---------------
+    std::array<float, kPts> postCurve {};
+    for (int i = 0; i < kPts; ++i)
+        postCurve[(size_t) i] = mainCurve[(size_t) i]
+                              * (1.0f - juce::jlimit (0.0f, 1.0f, carveCurve[(size_t) i]));
+
+    {
+        const auto p = areaPath (postCurve);
+        juce::ColourGradient fill (colours::bus.withAlpha (0.30f), plot.getX(), cy,
+                                   colours::bus.withAlpha (0.05f), plot.getX(), plot.getY(), false);
+        g.setGradientFill (fill);
+        g.fillPath (p);
+        g.setColour (colours::bus.withAlpha (0.85f));
+        g.strokePath (p, juce::PathStrokeType (1.4f));
+    }
+
+    {
+        const auto top = ribbonPath (mainCurve, postCurve, -1.0f);
+        const auto bot = ribbonPath (mainCurve, postCurve,  1.0f);
+        g.setColour (colours::carved.withAlpha (0.40f));
+        g.fillPath (top);
+        g.fillPath (bot);
+        if (! eco)
         {
-            const auto from = pointAt (i, innerR + 2.0f);
-            const auto to   = pointAt (i, radiusFor (sideCurve[(size_t) i]));
-            g.setColour (colours::carveMagenta.withAlpha (juce::jmin (0.30f, c * 0.30f)));
-            g.drawLine (juce::Line<float> (from, to), 4.0f);
-            g.setColour (colours::carveMagenta.withAlpha (juce::jmin (0.90f, c)));
-            g.drawLine (juce::Line<float> (from, to), 1.8f);
+            g.setColour (colours::carved.withAlpha (0.55f));
+            g.strokePath (top, juce::PathStrokeType (1.0f));
+            g.strokePath (bot, juce::PathStrokeType (1.0f));
         }
     }
 
-    // ---- sidechain layers (pre-carve), purple --------------------------------------
+    // ---- status pill ---------------------------------------------------------------
+    const int state = processor.uiState.load();
+    const float carvedDb = processor.uiCarvedDb.load();
+
+    juce::Colour sc = state == 2 ? colours::active
+                                 : (state == 1 ? colours::standby
+                                               : juce::Colour (0xff5a5d66));
+    juce::String st = state == 2 ? "CARVING " + juce::String (carvedDb, 1) + " dB"
+                                 : (state == 1 ? "STANDBY" : "NO SIDECHAIN");
+
+    const auto pill = juce::Rectangle<float> (150.0f, 22.0f)
+                          .withPosition (plot.getRight() - 150.0f, plot.getY());
+    g.setColour (juce::Colour (0xff101116).withAlpha (0.9f));
+    g.fillRoundedRectangle (pill, 11.0f);
+    g.setColour (sc.withAlpha (0.5f));
+    g.drawRoundedRectangle (pill, 11.0f, 1.0f);
+    g.setColour (sc);
+    g.fillEllipse (pill.getX() + 9.0f, pill.getCentreY() - 3.0f, 6.0f, 6.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.80f));
+    g.setFont (juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.14f));
+    g.drawText (st, pill.withTrimmedLeft (20.0f).toNearestInt(), juce::Justification::centred);
+
+    // ---- routing hint when nothing is connected ------------------------------------
+    if (state == 0)
     {
-        const auto p = buildSmoothRing (sideCurve);
-        g.setColour (colours::neonPurple.withAlpha (0.10f));
-        g.strokePath (p, juce::PathStrokeType (5.0f));
-        g.setColour (colours::neonPurple.withAlpha (0.60f));
-        g.strokePath (p, juce::PathStrokeType (1.6f));
+        g.setColour (juce::Colours::white.withAlpha (0.38f));
+        g.setFont (juce::Font (juce::FontOptions (13.0f)));
+        g.drawText ("Route your lead / vocal / kick into the sidechain input",
+                    plot.toNearestInt(), juce::Justification::centred);
+        g.setColour (juce::Colours::white.withAlpha (0.22f));
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.drawText ("FL Studio: wrapper menu > Processing > Connections",
+                    plot.translated (0.0f, 22.0f).toNearestInt(), juce::Justification::centred);
     }
-
-    // ---- main layer, neon blue: gradient area fill + layered glow ------------------
-    {
-        const auto p = buildSmoothRing (mainCurve);
-
-        juce::ColourGradient fill (colours::neonBlue.withAlpha (0.0f), centre.x, centre.y,
-                                   colours::neonBlue.withAlpha (0.14f),
-                                   centre.x + outerR, centre.y, true);
-        g.setGradientFill (fill);
-        g.fillPath (p);
-
-        g.setColour (colours::neonBlue.withAlpha (0.10f));
-        g.strokePath (p, juce::PathStrokeType (7.0f));
-        g.setColour (colours::neonBlue.withAlpha (0.18f));
-        g.strokePath (p, juce::PathStrokeType (3.5f));
-        g.setColour (colours::neonBlue);
-        g.strokePath (p, juce::PathStrokeType (1.8f));
-    }
-
-    // Soft halo where the ring meets the knob.
-    g.setColour (colours::neonBlue.withAlpha (0.05f));
-    g.drawEllipse (juce::Rectangle<float> ((innerR - 5.0f) * 2.0f, (innerR - 5.0f) * 2.0f)
-                       .withCentre (centre), 8.0f);
 }
 
 //==============================================================================
-// JeDExSymbiosisAudioProcessorEditor
+// CreditsOverlay
 //==============================================================================
-JeDExSymbiosisAudioProcessorEditor::JeDExSymbiosisAudioProcessorEditor (JeDExSymbiosisAudioProcessor& p)
-    : AudioProcessorEditor (p), processor (p), radar (p)
+CreditsOverlay::CreditsOverlay()
+{
+    jedexLogo  = juce::ImageFileFormat::loadFrom (BinaryData::jedex_logo_png,
+                                                  (size_t) BinaryData::jedex_logo_pngSize);
+    bigiceLogo = juce::ImageFileFormat::loadFrom (BinaryData::bigice_logo_png,
+                                                  (size_t) BinaryData::bigice_logo_pngSize);
+    setVisible (false);
+}
+
+void CreditsOverlay::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colours::black.withAlpha (0.78f));
+
+    cardArea = getLocalBounds().withSizeKeepingCentre (480, 300);
+    const auto card = cardArea.toFloat();
+    g.setColour (juce::Colour (0xff121318));
+    g.fillRoundedRectangle (card, 12.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.10f));
+    g.drawRoundedRectangle (card.reduced (0.5f), 12.0f, 1.0f);
+
+    g.setColour (juce::Colours::white.withAlpha (0.85f));
+    g.setFont (juce::Font (juce::FontOptions (15.0f)).withExtraKerningFactor (0.30f));
+    g.drawText ("CREDITS", cardArea.getX(), cardArea.getY() + 18, cardArea.getWidth(), 20,
+                juce::Justification::centred);
+
+    closeArea = { cardArea.getRight() - 34, cardArea.getY() + 12, 22, 22 };
+    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.setFont (juce::Font (juce::FontOptions (14.0f)));
+    g.drawText ("x", closeArea, juce::Justification::centred);
+
+    const int colW = 200;
+    jedexArea  = { cardArea.getX() + 30,               cardArea.getY() + 52, colW, 190 };
+    bigiceArea = { cardArea.getRight() - 30 - colW,    cardArea.getY() + 52, colW, 190 };
+
+    auto drawArtist = [&g] (const juce::Rectangle<int>& area, const juce::Image& logo,
+                            const juce::String& name)
+    {
+        const auto logoBox = area.withHeight (130).reduced (30, 0).toFloat();
+        if (logo.isValid())
+            g.drawImageWithin (logo, (int) logoBox.getX(), (int) logoBox.getY(),
+                               (int) logoBox.getWidth(), (int) logoBox.getHeight(),
+                               juce::RectanglePlacement::centred);
+
+        g.setColour (juce::Colours::white.withAlpha (0.85f));
+        g.setFont (juce::Font (juce::FontOptions (13.0f)).withExtraKerningFactor (0.16f));
+        g.drawText (name, area.withY (area.getY() + 136).withHeight (18),
+                    juce::Justification::centred);
+
+        g.setColour (colours::ref.withAlpha (0.85f));
+        g.setFont (juce::Font (juce::FontOptions (10.0f)).withExtraKerningFactor (0.20f));
+        g.drawText ("OPEN SPOTIFY", area.withY (area.getY() + 158).withHeight (14),
+                    juce::Justification::centred);
+    };
+
+    drawArtist (jedexArea, jedexLogo, "JeDEx");
+    drawArtist (bigiceArea, bigiceLogo, "BIG ICE");
+
+    g.setColour (juce::Colours::white.withAlpha (0.28f));
+    g.setFont (juce::Font (juce::FontOptions (9.0f)).withExtraKerningFactor (0.20f));
+    g.drawText ("CARVE  -  by JeDEx x Big Ice",
+                cardArea.withY (cardArea.getBottom() - 26).withHeight (14),
+                juce::Justification::centred);
+}
+
+void CreditsOverlay::mouseUp (const juce::MouseEvent& e)
+{
+    const auto pos = e.getPosition();
+
+    if (jedexArea.contains (pos))
+        juce::URL (kJedexSpotifyUrl).launchInDefaultBrowser();
+    else if (bigiceArea.contains (pos))
+        juce::URL (kBigIceSpotifyUrl).launchInDefaultBrowser();
+    else if (closeArea.expanded (6).contains (pos) || ! cardArea.contains (pos))
+        setVisible (false);
+}
+
+//==============================================================================
+// CarveAudioProcessorEditor
+//==============================================================================
+CarveAudioProcessorEditor::CarveAudioProcessorEditor (CarveAudioProcessor& p)
+    : AudioProcessorEditor (p), processor (p), spectrum (p)
 {
     setOpaque (true);
 
-    addAndMakeVisible (radar);
+    addAndMakeVisible (spectrum);
 
-    knob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    knob.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-    knob.setDoubleClickReturnValue (true, 0.5);
-    knob.setLookAndFeel (&lookAndFeel);
-    knob.setBufferedToImage (true);   // radar repaints at 30 fps underneath —
-                                      // cache the knob so its shadow blur isn't re-rendered
+    auto initKnob = [this] (juce::Slider& s, const juce::String& name, const juce::String& paramId,
+                            std::unique_ptr<SliderAttachment>& att)
+    {
+        s.setName (name);
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        s.setLookAndFeel (&lookAndFeel);
+        s.setBufferedToImage (true);
+        addAndMakeVisible (s);
+        att = std::make_unique<SliderAttachment> (processor.apvts, paramId, s);
+    };
 
-    addAndMakeVisible (knob);
+    initKnob (amountKnob, "AMOUNT",     "amount", amountAtt);
+    initKnob (smoothKnob, "SMOOTHNESS", "smooth", smoothAtt);
+    initKnob (mixKnob,    "MIX",        "mix",    mixAtt);
+    initKnob (outputKnob, "OUTPUT",     "output", outputAtt);
+    amountKnob.setDoubleClickReturnValue (true, 0.5);
 
-    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
-        processor.apvts, "symbiosis", knob);
+    ecoToggle.setLookAndFeel (&lookAndFeel);
+    ecoToggle.setBufferedToImage (true);
+    addAndMakeVisible (ecoToggle);
+    ecoAtt = std::make_unique<ButtonAttachment> (processor.apvts, "eco", ecoToggle);
 
-    setSize (kEditorWidth, kEditorHeight);
+    creditsButton.setLookAndFeel (&lookAndFeel);
+    creditsButton.onClick = [this] { credits.setVisible (true); credits.toFront (false); };
+    addAndMakeVisible (creditsButton);
+
+    addChildComponent (credits);
+
+    setSize (carve::kEditorWidth, carve::kEditorHeight);
 }
 
-JeDExSymbiosisAudioProcessorEditor::~JeDExSymbiosisAudioProcessorEditor()
+CarveAudioProcessorEditor::~CarveAudioProcessorEditor()
 {
-    knob.setLookAndFeel (nullptr);
+    amountKnob.setLookAndFeel (nullptr);
+    smoothKnob.setLookAndFeel (nullptr);
+    mixKnob.setLookAndFeel (nullptr);
+    outputKnob.setLookAndFeel (nullptr);
+    ecoToggle.setLookAndFeel (nullptr);
+    creditsButton.setLookAndFeel (nullptr);
 }
 
-void JeDExSymbiosisAudioProcessorEditor::paint (juce::Graphics& g)
+void CarveAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    const auto b = getLocalBounds().toFloat();
-    const auto centre = b.getCentre();
-
-    // Matte base.
     g.fillAll (colours::background);
 
-    // Aurora washes — barely-there blue top-left, purple bottom-right.
-    {
-        juce::ColourGradient wash1 (colours::neonBlue.withAlpha (0.040f),
-                                    b.getWidth() * 0.22f, b.getHeight() * 0.16f,
-                                    colours::neonBlue.withAlpha (0.0f),
-                                    b.getWidth() * 0.85f, b.getHeight() * 0.75f, true);
-        g.setGradientFill (wash1);
-        g.fillAll();
+    // header
+    g.setColour (juce::Colours::white.withAlpha (0.94f));
+    g.setFont (juce::Font (juce::FontOptions (26.0f)).boldened().withExtraKerningFactor (0.10f));
+    g.drawText ("CARVE", 24, 12, 130, 30, juce::Justification::centredLeft);
 
-        juce::ColourGradient wash2 (colours::neonPurple.withAlpha (0.035f),
-                                    b.getWidth() * 0.80f, b.getHeight() * 0.86f,
-                                    colours::neonPurple.withAlpha (0.0f),
-                                    b.getWidth() * 0.15f, b.getHeight() * 0.20f, true);
-        g.setGradientFill (wash2);
-        g.fillAll();
-    }
+    g.setColour (colours::ref.withAlpha (0.80f));
+    g.setFont (juce::Font (juce::FontOptions (11.0f)).withExtraKerningFactor (0.12f));
+    g.drawText ("by JeDEx x Big Ice", 152, 20, 160, 16, juce::Justification::centredLeft);
 
-    // Vignette.
-    {
-        juce::ColourGradient vignette (juce::Colours::transparentBlack,
-                                       centre.x, centre.y,
-                                       juce::Colours::black.withAlpha (0.42f),
-                                       centre.x, 0.0f, true);
-        g.setGradientFill (vignette);
-        g.fillAll();
-    }
+    g.setColour (juce::Colours::white.withAlpha (0.30f));
+    g.setFont (juce::Font (juce::FontOptions (8.5f)).withExtraKerningFactor (0.34f));
+    g.drawText ("CONTEXT-AWARE HARMONIC CARVING", 24, 42, 300, 12,
+                juce::Justification::centredLeft);
 
-    // ---- header --------------------------------------------------------------------
-    {
-        auto title = getLocalBounds().removeFromTop (34);
-        auto left  = title.removeFromLeft (getWidth() / 2 - 6);
-
-        g.setColour (juce::Colours::white.withAlpha (0.92f));
-        g.setFont (juce::Font (juce::FontOptions (20.0f)).boldened());
-        g.drawText ("JeDEx", left, juce::Justification::centredRight);
-
-        g.setColour (colours::neonBlue.withAlpha (0.85f));
-        g.setFont (juce::Font (juce::FontOptions (18.0f)).withExtraKerningFactor (0.30f));
-        g.drawText (" SYMBIOSIS", title, juce::Justification::centredLeft);
-
-        g.setColour (juce::Colours::white.withAlpha (0.26f));
-        g.setFont (juce::Font (juce::FontOptions (8.5f)).withExtraKerningFactor (0.38f));
-        g.drawText ("DYNAMIC HARMONIC CARVING",
-                    juce::Rectangle<int> (0, 34, getWidth(), 12), juce::Justification::centred);
-
-        // decorative rules flanking the title
-        g.setColour (juce::Colours::white.withAlpha (0.10f));
-        const float ry = 20.0f;
-        g.drawLine (centre.x - 220.0f, ry, centre.x - 140.0f, ry, 1.0f);
-        g.drawLine (centre.x + 140.0f, ry, centre.x + 220.0f, ry, 1.0f);
-    }
-
-    // ---- footer legend -------------------------------------------------------------
-    {
-        struct Entry { juce::Colour colour; const char* text; int width; };
-        const Entry entries[] = { { colours::neonBlue,     "MAIN",       40 },
-                                  { colours::neonPurple,   "LAYERS B+C", 88 },
-                                  { colours::carveMagenta, "CARVED",     58 } };
-
-        g.setFont (juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.22f));
-
-        int total = 0;
-        for (const auto& e : entries) total += 14 + e.width + 22;
-        total -= 22;
-
-        int xPos = (getWidth() - total) / 2;
-        const int yPos = getHeight() - 30;
-
-        for (const auto& e : entries)
-        {
-            g.setColour (e.colour.withAlpha (0.85f));
-            g.fillEllipse ((float) xPos, (float) yPos - 3.0f, 6.0f, 6.0f);
-            g.setColour (juce::Colours::white.withAlpha (0.38f));
-            g.drawText (e.text, xPos + 14, yPos - 8, e.width, 12, juce::Justification::centredLeft);
-            xPos += 14 + e.width + 22;
-        }
-    }
+    g.setColour (juce::Colours::white.withAlpha (0.06f));
+    g.drawLine (20.0f, 58.0f, (float) getWidth() - 20.0f, 58.0f, 1.0f);
 }
 
-void JeDExSymbiosisAudioProcessorEditor::resized()
+void CarveAudioProcessorEditor::resized()
 {
-    radar.setBounds (getLocalBounds());
-    knob.setBounds (juce::Rectangle<int> (kKnobSize, kKnobSize)
-                        .withCentre (getLocalBounds().getCentre()));
+    spectrum.setBounds (20, 64, getWidth() - 40, 288);
+    creditsButton.setBounds (getWidth() - 124, 16, 100, 26);
+
+    ecoToggle.setBounds (56, 424, 140, 30);
+    smoothKnob.setBounds (208, 376, 100, 134);
+    amountKnob.setBounds (338, 362, 144, 158);
+    mixKnob.setBounds (512, 376, 100, 134);
+    outputKnob.setBounds (636, 376, 100, 134);
+
+    credits.setBounds (getLocalBounds());
 }

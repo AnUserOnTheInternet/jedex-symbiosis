@@ -2,81 +2,123 @@
 
 #include "PluginProcessor.h"
 
-namespace symbiosis
+namespace carve
 {
-    inline constexpr int   kEditorWidth  = 640;
-    inline constexpr int   kEditorHeight = 660;
-    inline constexpr int   kKnobSize     = 200;
-    inline constexpr float kInnerRadius  = 112.0f;   // radar ring starts outside the knob
+    inline constexpr int kEditorWidth  = 820;
+    inline constexpr int kEditorHeight = 540;
 
     namespace colours
     {
-        inline const juce::Colour background  { 0xff0a0a0d };
-        inline const juce::Colour backgroundHi{ 0xff101116 };
-        inline const juce::Colour neonBlue    { 0xff00d4ff };
-        inline const juce::Colour neonPurple  { 0xffb44cff };
-        inline const juce::Colour carveMagenta{ 0xffe14ce8 };
+        inline const juce::Colour background { 0xff0a0a0d };
+        inline const juce::Colour panel      { 0xff0d0e12 };
+        inline const juce::Colour ref        { 0xff00d4ff };   // priority sources
+        inline const juce::Colour bus        { 0xffb44cff };   // your (carved) content
+        inline const juce::Colour carved     { 0xffe14ce8 };   // removed spectrum
+        inline const juce::Colour active     { 0xff2ee6a8 };   // status: carving
+        inline const juce::Colour standby    { 0xffe6b12e };   // status: sidechain silent
     }
+
+    inline const char* kJedexSpotifyUrl  = "https://open.spotify.com/artist/2opw8FDhiTfWeGvbc6ZtEu";
+    inline const char* kBigIceSpotifyUrl = "https://open.spotify.com/artist/6ms1OtzZNm2ONxOcTfSlme";
 }
 
 //==============================================================================
-/** Metallic rotary look for the single 'Symbiosis Amount' knob. */
-class SymbiosisLookAndFeel : public juce::LookAndFeel_V4
+/** Metallic big knob + flat small knobs + Eco pill toggle + flat buttons. */
+class CarveLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height,
                            float sliderPosProportional, float rotaryStartAngle,
                            float rotaryEndAngle, juce::Slider&) override;
+    void drawToggleButton (juce::Graphics&, juce::ToggleButton&,
+                           bool shouldDrawButtonAsHighlighted,
+                           bool shouldDrawButtonAsDown) override;
+    void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&,
+                               bool shouldDrawButtonAsHighlighted,
+                               bool shouldDrawButtonAsDown) override;
+    void drawButtonText (juce::Graphics&, juce::TextButton&,
+                         bool shouldDrawButtonAsHighlighted,
+                         bool shouldDrawButtonAsDown) override;
 };
 
 //==============================================================================
 /**
-    Circular radar visualiser.
+    Horizontal mirrored spectrum view.
 
-    Angle  = log-frequency (30 Hz .. 16 kHz, clockwise from 12 o'clock).
-    Radius = level. Neon blue ring = main layer, purple ring = combined
-    sidechain layers (pre-carve), magenta radial glow = spectrum currently
-    being carved out of the sidechains.
+    x = log frequency (30 Hz .. 16 kHz), y = level, mirrored around the centre
+    line. Blue = priority sources (sidechain), purple = your content after
+    carving, magenta = the spectrum being removed right now. Includes a status
+    pill (NO SIDECHAIN / STANDBY / CARVING ACTIVE + gain-reduction read-out)
+    and a routing hint when no sidechain is connected.
+
+    The static chrome (frame, grid, labels, legend) is cached in an Image.
 */
-class RadarVisualizer : public juce::Component,
-                        private juce::Timer
+class SpectrumView : public juce::Component,
+                     private juce::Timer
 {
 public:
-    explicit RadarVisualizer (JeDExSymbiosisAudioProcessor&);
-    ~RadarVisualizer() override;
-
-    void paint (juce::Graphics&) override;
-
-private:
-    void timerCallback() override;
-
-    JeDExSymbiosisAudioProcessor& processor;
-
-    static constexpr int kPoints = 240;
-    std::array<float, kPoints> mainCurve {}, sideCurve {}, carveCurve {};
-
-    float sweepPhase = 0.0f;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RadarVisualizer)
-};
-
-//==============================================================================
-class JeDExSymbiosisAudioProcessorEditor : public juce::AudioProcessorEditor
-{
-public:
-    explicit JeDExSymbiosisAudioProcessorEditor (JeDExSymbiosisAudioProcessor&);
-    ~JeDExSymbiosisAudioProcessorEditor() override;
+    explicit SpectrumView (CarveAudioProcessor&);
+    ~SpectrumView() override;
 
     void paint (juce::Graphics&) override;
     void resized() override;
 
 private:
-    JeDExSymbiosisAudioProcessor& processor;
+    void timerCallback() override;
+    void rebuildBackground();
 
-    SymbiosisLookAndFeel lookAndFeel;
-    RadarVisualizer radar;
-    juce::Slider knob;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
+    CarveAudioProcessor& processor;
+    juce::Image bgCache;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (JeDExSymbiosisAudioProcessorEditor)
+    static constexpr int kPts = 140;
+    std::array<float, kPts> refCurve {}, mainCurve {}, carveCurve {};
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SpectrumView)
+};
+
+//==============================================================================
+/** Click-to-dismiss overlay with the JeDEx and Big Ice logos linking to Spotify. */
+class CreditsOverlay : public juce::Component
+{
+public:
+    CreditsOverlay();
+
+    void paint (juce::Graphics&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    juce::Image jedexLogo, bigiceLogo;
+    juce::Rectangle<int> cardArea, jedexArea, bigiceArea, closeArea;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CreditsOverlay)
+};
+
+//==============================================================================
+class CarveAudioProcessorEditor : public juce::AudioProcessorEditor
+{
+public:
+    explicit CarveAudioProcessorEditor (CarveAudioProcessor&);
+    ~CarveAudioProcessorEditor() override;
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+
+private:
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+
+    CarveAudioProcessor& processor;
+
+    CarveLookAndFeel lookAndFeel;
+    SpectrumView spectrum;
+
+    juce::Slider amountKnob, smoothKnob, mixKnob, outputKnob;
+    juce::ToggleButton ecoToggle { "ECO MODE" };
+    juce::TextButton creditsButton { "CREDITS" };
+    CreditsOverlay credits;
+
+    std::unique_ptr<SliderAttachment> amountAtt, smoothAtt, mixAtt, outputAtt;
+    std::unique_ptr<ButtonAttachment> ecoAtt;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CarveAudioProcessorEditor)
 };
