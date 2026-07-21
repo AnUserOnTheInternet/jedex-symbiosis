@@ -61,12 +61,22 @@ public:
     /** Average linear gain applied to the main energy in the last frame (1 = no carving). */
     float getCarvedGainLin() const noexcept             { return carvedGainLin; }
 
+    /** Mean gain applied below kLowHz — the range laptop speakers cannot reproduce. */
+    float getLowCarveGainLin() const noexcept           { return lowCarveGain; }
+
+    /** Depth that WOULD be needed right now to hit the clarity target (auto mode).
+        Open-loop: measured from the incoming spectra, never from the carved result,
+        so there is no servo loop to oscillate. */
+    float getRequiredDepth() const noexcept             { return requiredDepth; }
+
     /** dryOut = delay-aligned input, wetOut = carved resynthesis (same latency). */
     void processSample (float mainIn, float refAIn, float refBIn,
                         float& dryOut, float& wetOut) noexcept;
 
 private:
     void applyOrder (int newOrder);
+    void setupBands();
+    void measureRequiredDepth() noexcept;
     void processFrame() noexcept;
 
     juce::dsp::FFT fftBig { maxOrder };
@@ -91,7 +101,23 @@ private:
     std::array<float, maxFftSize> scratch {};
 
     std::array<float, maxBins> refEAccum {}, refEnergySm {};
+    std::array<float, maxBins> mainEBin {};
     std::array<float, maxBins> gain {}, gTarget {}, gSmooth {};
+
+    // ---- auto-calibration: critical-band analysis ---------------------------------
+    static constexpr int   kNumBands    = 24;     // Bark-like critical bands
+    static constexpr float kLowHz       = 250.0f; // "laptop speakers lie below here"
+    static constexpr float kTargetR     = 1.6f;   // priority ~+2 dB over main in its bands
+    static constexpr float kMaxExcessDb = 12.0f;  // masking excess earning full depth
+
+    int numBands = 0;
+    float binHz = 1.0f;
+    int lowBinMax = 1;
+    std::array<int, kNumBands + 1> bandEdge {};
+    std::array<float, kNumBands> bandWeight {}, bandP {}, bandM {};
+
+    float requiredDepth = 0.0f;
+    float lowCarveGain = 1.0f;
 
     float depth = 0.0f, targetDepth = 0.0f, smoothness = 0.5f;
     bool refAOn = false, refBOn = false;
@@ -144,6 +170,9 @@ public:
     std::atomic<int>   uiState { 0 };
     std::atomic<float> uiCarvedDb { 0.0f };     // average gain reduction, dB (<= 0)
     std::atomic<int>   uiFftSize { CarveEngine::maxFftSize };
+    std::atomic<float> uiAppliedDepth { 0.0f }; // depth actually in use (0..1)
+    std::atomic<float> uiLowCarvedDb { 0.0f };  // carving below 250 Hz — the range
+                                                // laptop speakers cannot reproduce
 
     // Visualiser taps (left-channel engine), read by the editor timer.
     std::array<std::atomic<float>, kNumBins> displayRef;
@@ -166,12 +195,14 @@ private:
     std::atomic<float>* mixParam    = nullptr;
     std::atomic<float>* outputParam = nullptr;
     std::atomic<float>* ecoParam    = nullptr;
+    std::atomic<float>* autoParam   = nullptr;
 
     juce::SmoothedValue<float> mixSm, outSm;
 
     CarveEngine engines[2];
     int curOrder = CarveEngine::maxOrder;
     int holdA = 0, holdB = 0;
+    float autoDepthSm = 0.0f;   // slow-settling auto depth (message-free, audio thread)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CarveAudioProcessor)
 };

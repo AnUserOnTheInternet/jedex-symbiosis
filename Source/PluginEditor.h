@@ -27,6 +27,10 @@ namespace carve
 class CarveLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    /** When auto-calibration is on the big knob is a bias trim, not a raw depth,
+        so it draws a different centre read-out. Set on toggle, not per frame. */
+    bool autoMode = true;
+
     void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height,
                            float sliderPosProportional, float rotaryStartAngle,
                            float rotaryEndAngle, juce::Slider&) override;
@@ -114,11 +118,12 @@ private:
 
     juce::Slider amountKnob, smoothKnob, mixKnob, outputKnob;
     juce::ToggleButton ecoToggle { "ECO MODE" };
+    juce::ToggleButton autoToggle { "AUTO CALIBRATE" };
     juce::TextButton creditsButton { "CREDITS" };
     CreditsOverlay credits;
 
     std::unique_ptr<SliderAttachment> amountAtt, smoothAtt, mixAtt, outputAtt;
-    std::unique_ptr<ButtonAttachment> ecoAtt;
+    std::unique_ptr<ButtonAttachment> ecoAtt, autoAtt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CarveAudioProcessorEditor)
 };

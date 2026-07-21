@@ -42,7 +42,113 @@ void CarveEngine::applyOrder (int newOrder)
     engRel = onePolePerFrame (0.060);
     gAtk   = onePolePerFrame (0.005);
 
+    setupBands();
     reset();
+}
+
+void CarveEngine::setupBands()
+{
+    // Bark-like critical bands. The carve itself stays per-bin; these bands are only
+    // used to DECIDE how deep to carve, because masking is a critical-band phenomenon.
+    static const float edges[kNumBands + 1] =
+    {
+           20.0f,  100.0f,  200.0f,  300.0f,  400.0f,  510.0f,  630.0f,  770.0f,
+          920.0f, 1080.0f, 1270.0f, 1480.0f, 1720.0f, 2000.0f, 2320.0f, 2700.0f,
+         3150.0f, 3700.0f, 4400.0f, 5300.0f, 6400.0f, 7700.0f, 9500.0f, 12000.0f, 15500.0f
+    };
+
+    // Perceptual importance: peaks through the 1–4 kHz presence/intelligibility range,
+    // stays high across the 200–800 Hz "mud" range, and deliberately backs off in the
+    // sub so auto mode never guts the low end.
+    static const float weights[kNumBands] =
+    {
+        0.15f, 0.40f, 0.90f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f,
+        1.00f, 1.05f, 1.10f, 1.15f, 1.20f, 1.20f, 1.20f, 1.15f,
+        1.10f, 1.00f, 0.85f, 0.70f, 0.55f, 0.40f, 0.30f, 0.25f
+    };
+
+    binHz = (float) (sr / (double) fftSize);
+    lowBinMax = juce::jlimit (2, numBins, (int) (kLowHz / binHz));
+
+    // Walk a running start bin so the bands stay contiguous and non-overlapping even
+    // at high sample rates, where several Bark edges can collapse onto the same bin.
+    // A band that would be empty is folded into the next one rather than double-counted.
+    numBands = 0;
+    int next = 1;
+    for (int i = 0; i < kNumBands && next < numBins; ++i)
+    {
+        int b1 = (int) (edges[i + 1] / binHz);
+        b1 = juce::jlimit (next, numBins, b1);
+
+        if (b1 <= next)
+            continue;                       // zero width here — merge into the next band
+
+        bandEdge[(size_t) numBands]       = next;
+        bandEdge[(size_t) (numBands + 1)] = b1;
+        bandWeight[(size_t) numBands]     = weights[i];
+        ++numBands;
+        next = b1;
+    }
+}
+
+void CarveEngine::measureRequiredDepth() noexcept
+{
+    // Sum energies into critical bands.
+    float peakP = 0.0f;
+    for (int b = 0; b < numBands; ++b)
+    {
+        float sp = 0.0f, sm = 0.0f;
+        for (int k = bandEdge[(size_t) b]; k < bandEdge[(size_t) (b + 1)]; ++k)
+        {
+            sp += refEnergySm[(size_t) k];
+            sm += mainEBin[(size_t) k];
+        }
+        bandP[(size_t) b] = sp;
+        bandM[(size_t) b] = sm;
+        peakP = juce::jmax (peakP, sp);
+    }
+
+    if (peakP <= 1.0e-9f)
+    {
+        requiredDepth = 0.0f;
+        return;
+    }
+
+    // Only bands where the priority source actually lives get a vote — we do not care
+    // that the hats are loud at 10 kHz if the vocal has nothing up there.
+    const float gate = peakP * 0.05f;
+
+    // How far the priority sits below its target ratio, in dB, averaged over the bands
+    // that matter. Deliberately NOT an algebraic inversion of the carve equation: that
+    // form contains a 1/mask term which saturates the moment the priority drops even
+    // 3 dB under the main content — i.e. on ordinary material — pinning auto mode at
+    // maximum depth. Masking excess is bounded, monotonic and behaves like the ear.
+    float wsum = 0.0f, dsum = 0.0f;
+    for (int b = 0; b < numBands; ++b)
+    {
+        const float P = bandP[(size_t) b];
+        if (P < gate)
+            continue;
+
+        const float M = bandM[(size_t) b] + 1.0e-12f;
+        const float R = P / M;                       // priority-to-masker energy ratio
+
+        // Bands that are already clear stay in the average contributing zero, so a mix
+        // that only collides here and there is not treated like one that collides
+        // everywhere.
+        const float excessDb = juce::jlimit (0.0f, kMaxExcessDb,
+                                             10.0f * std::log10 (kTargetR / R));
+
+        const float w = bandWeight[(size_t) b] * P;
+        dsum += w * excessDb;
+        wsum += w;
+    }
+
+    // kMaxExcessDb of average masking excess earns full depth; parity earns a gentle
+    // touch. Monotonic and bounded by construction — it cannot run away.
+    requiredDepth = wsum > 0.0f
+                      ? juce::jlimit (0.0f, 1.0f, (dsum / wsum) / kMaxExcessDb)
+                      : 0.0f;
 }
 
 void CarveEngine::reset() noexcept
@@ -53,10 +159,13 @@ void CarveEngine::reset() noexcept
     mainFifo.fill (0.0f);  refFifoA.fill (0.0f);  refFifoB.fill (0.0f);
     mainDelay.fill (0.0f); ola.fill (0.0f);
     refEnergySm.fill (0.0f);
+    mainEBin.fill (0.0f);
     gain.fill (1.0f);
 
     depth = targetDepth;
     carvedGainLin = 1.0f;
+    lowCarveGain = 1.0f;
+    requiredDepth = 0.0f;
 }
 
 void CarveEngine::processSample (float mainIn, float refAIn, float refBIn,
@@ -132,6 +241,7 @@ void CarveEngine::processFrame() noexcept
         const float mre = mainFrame[(size_t) (2 * k)];
         const float mim = mainFrame[(size_t) (2 * k + 1)];
         const float mE  = mre * mre + mim * mim;
+        mainEBin[(size_t) k] = mE;
         totE += mE;
 
         float& rs = refEnergySm[(size_t) k];
@@ -150,6 +260,13 @@ void CarveEngine::processFrame() noexcept
             tap.mainMag[k].store (std::sqrt (mE), std::memory_order_relaxed);
         }
     }
+
+    // Measure what depth the current collision would require. Done on the INPUT
+    // spectra (open loop), so auto mode cannot chase its own output.
+    if (anyRef)
+        measureRequiredDepth();
+    else
+        requiredDepth = 0.0f;
 
     // ---- spectral smoothing of the gain curve (suppresses musical noise) ----------
     gSmooth[0] = gain[0];
@@ -173,6 +290,18 @@ void CarveEngine::processFrame() noexcept
             tap.carve[k].store (1.0f - g, std::memory_order_relaxed);
     }
     carvedGainLin = std::sqrt (juce::jlimit (0.0f, 1.0f, keptE / totE));
+
+    // Mean carve below kLowHz: what the user's laptop speakers physically cannot show them.
+    {
+        float lowSum = 0.0f;
+        int lowCount = 0;
+        for (int k = 1; k < lowBinMax; ++k)
+        {
+            lowSum += gSmooth[(size_t) k];
+            ++lowCount;
+        }
+        lowCarveGain = lowCount > 0 ? lowSum / (float) lowCount : 1.0f;
+    }
 
     // ---- rebuild the conjugate-symmetric negative half, inverse, WOLA -------------
     for (int k = 1; k < fftSize / 2; ++k)
@@ -204,6 +333,7 @@ CarveAudioProcessor::CarveAudioProcessor()
     mixParam    = apvts.getRawParameterValue ("mix");
     outputParam = apvts.getRawParameterValue ("output");
     ecoParam    = apvts.getRawParameterValue ("eco");
+    autoParam   = apvts.getRawParameterValue ("autocal");
 
     for (auto& v : displayRef)   v.store (0.0f);
     for (auto& v : displayMain)  v.store (0.0f);
@@ -248,7 +378,9 @@ CarveAudioProcessor::createParameterLayout()
             juce::AudioParameterFloatAttributes().withStringFromValueFunction (
                 [] (float v, int) { return juce::String (v, 1) + " dB"; })),
         std::make_unique<juce::AudioParameterBool> (
-            juce::ParameterID { "eco", 1 }, "Eco Mode", false)
+            juce::ParameterID { "eco", 1 }, "Eco Mode", false),
+        std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { "autocal", 1 }, "Auto Calibrate", true)
     };
 }
 
@@ -256,9 +388,13 @@ void CarveAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     curOrder = (ecoParam->load() > 0.5f ? CarveEngine::maxOrder - 1 : CarveEngine::maxOrder);
 
+    // In auto mode the depth is derived every block, so start the engines from silence
+    // rather than seeding them with the Amount knob (which now means bias, not depth).
+    const float seedDepth = autoParam->load() > 0.5f ? 0.0f : amountParam->load();
+
     for (int i = 0; i < 2; ++i)
     {
-        engines[i].setDepth (amountParam->load());
+        engines[i].setDepth (seedDepth);
         engines[i].setSmoothness (smoothParam->load());
         engines[i].prepare (sampleRate, curOrder, i == 1);
     }
@@ -269,6 +405,7 @@ void CarveAudioProcessor::prepareToPlay (double sampleRate, int)
     outSm.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (outputParam->load()));
 
     holdA = holdB = 0;
+    autoDepthSm = 0.0f;
     uiFftSize.store (1 << curOrder);
     setLatencySamples (1 << curOrder);
 }
@@ -319,15 +456,9 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // ---- parameters ---------------------------------------------------------------
-    const float depthNow  = amountParam->load();
-    const float smoothNow = smoothParam->load();
-    engines[0].setDepth (depthNow);      engines[1].setDepth (depthNow);
-    engines[0].setSmoothness (smoothNow); engines[1].setSmoothness (smoothNow);
-    mixSm.setTargetValue (mixParam->load());
-    outSm.setTargetValue (juce::Decibels::decibelsToGain (outputParam->load()));
-
     // ---- sidechain activity gate (skips reference FFTs while silent) --------------
+    // Runs before the parameter stage because auto-calibration needs to know whether a
+    // priority source is actually present this block.
     auto refPeak = [this, &buffer, numSamples] (int busIndex) -> float
     {
         if (busIndex >= getBusCount (true))
@@ -359,6 +490,52 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const bool connected = (pA >= 0.0f) || (pB >= 0.0f);
     uiState.store (! connected ? 0 : ((aOn || bOn) ? 2 : 1));
+
+    // ---- parameters ---------------------------------------------------------------
+    const float amountNow = amountParam->load();
+    const float smoothNow = smoothParam->load();
+    const bool  autoOn    = autoParam->load() > 0.5f;
+
+    float depthNow;
+
+    if (autoOn)
+    {
+        // Freeze the calibration while the priority source is silent. Vocals pause
+        // between phrases; without this the settled value would bleed away during every
+        // gap and have to climb back, making the carve breathe across the performance.
+        // Nothing is carved meanwhile anyway — an absent reference gives a zero mask.
+        if (aOn || bOn)
+        {
+            // Both engines measure the same programme material; average them so the two
+            // channels never drift into a stereo imbalance.
+            const float measured = 0.5f * (engines[0].getRequiredDepth()
+                                         + engines[1].getRequiredDepth());
+
+            // Settle over seconds, not milliseconds: we are calibrating to the character
+            // of the song, not reacting to individual transients. Rises a little faster
+            // than it falls so a busy chorus is covered promptly.
+            const double sr = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+            const double tc = measured > autoDepthSm ? 1.5 : 3.0;
+            const float  c  = juce::jlimit (0.0f, 1.0f,
+                                  1.0f - (float) std::exp (-(double) numSamples / (sr * tc)));
+            autoDepthSm += c * (measured - autoDepthSm);
+        }
+
+        // The Amount knob becomes a bias: 0.5 = trust the measurement, and each half
+        // of the range doubles or halves it.
+        const float bias = std::pow (2.0f, (amountNow - 0.5f) * 2.0f);
+        depthNow = juce::jlimit (0.0f, 0.95f, autoDepthSm * bias);
+    }
+    else
+    {
+        depthNow = amountNow;
+    }
+
+    uiAppliedDepth.store (depthNow);
+    engines[0].setDepth (depthNow);      engines[1].setDepth (depthNow);
+    engines[0].setSmoothness (smoothNow); engines[1].setSmoothness (smoothNow);
+    mixSm.setTargetValue (mixParam->load());
+    outSm.setTargetValue (juce::Decibels::decibelsToGain (outputParam->load()));
 
     // ---- audio --------------------------------------------------------------------
     auto mainIn = getBusBuffer (buffer, true, 0);
@@ -412,9 +589,18 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             oR[i] = right;
     }
 
-    const float gLin = juce::jmin (engines[0].getCarvedGainLin(),
-                                   engines[1].getCarvedGainLin());
-    uiCarvedDb.store (juce::Decibels::gainToDecibels (gLin, -60.0f));
+    // Report what actually reaches the output: at Mix < 100 % the dry path fills part of
+    // the hole back in, so the raw carve figure would overstate the attenuation.
+    const float mixNow = mixParam->load();
+    auto effective = [mixNow] (float gLin)
+    {
+        return juce::Decibels::gainToDecibels (1.0f + mixNow * (gLin - 1.0f), -60.0f);
+    };
+
+    uiCarvedDb.store (effective (juce::jmin (engines[0].getCarvedGainLin(),
+                                             engines[1].getCarvedGainLin())));
+    uiLowCarvedDb.store (effective (juce::jmin (engines[0].getLowCarveGainLin(),
+                                                engines[1].getLowCarveGainLin())));
 }
 
 //==============================================================================
@@ -431,8 +617,25 @@ void CarveAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
 void CarveAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr)
+        return;
+
+    auto tree = juce::ValueTree::fromXml (*xml);
+
+    // Sessions saved before auto-calibration existed stored Amount as a raw depth. If we
+    // let the parameter fall back to its "on" default, those mixes would reopen with the
+    // knob silently reinterpreted as a bias and play back differently. Absent means old.
+    bool hasAutoCal = false;
+    for (int i = 0; i < tree.getNumChildren(); ++i)
+        if (tree.getChild (i).getProperty ("id").toString() == "autocal")
+            hasAutoCal = true;
+
+    apvts.replaceState (tree);
+
+    if (! hasAutoCal)
+        if (auto* p = apvts.getParameter ("autocal"))
+            p->setValueNotifyingHost (0.0f);
 }
 
 //==============================================================================

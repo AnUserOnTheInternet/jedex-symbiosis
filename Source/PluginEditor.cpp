@@ -112,10 +112,34 @@ void CarveLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y,
             g.drawLine (juce::Line<float> (inner, outer), 2.0f);
         }
 
-        // centre read-out
-        g.setColour (juce::Colours::white.withAlpha (0.88f));
-        g.setFont (juce::Font (juce::FontOptions (21.0f)).withExtraKerningFactor (0.04f));
-        g.drawText (valueText, body.toNearestInt(), juce::Justification::centred);
+        // centre read-out — in auto mode this knob trims the measurement, so show the
+        // offset from neutral rather than a raw depth percentage.
+        if (autoMode)
+        {
+            // Report the multiplier actually applied to the measurement (2^((v-0.5)*2)),
+            // not the knob's raw travel — otherwise the bottom of the range would claim
+            // "-100%" while really only halving the depth.
+            const float bias = std::pow (2.0f, ((float) slider.getValue() - 0.5f) * 2.0f);
+            const int   pct  = juce::roundToInt ((bias - 1.0f) * 100.0f);
+
+            g.setColour (juce::Colours::white.withAlpha (0.88f));
+            g.setFont (juce::Font (juce::FontOptions (19.0f)).withExtraKerningFactor (0.04f));
+            g.drawText (pct == 0 ? "AUTO" : (pct > 0 ? "+" + juce::String (pct) + "%"
+                                                     : juce::String (pct) + "%"),
+                        body.translated (0.0f, -7.0f).toNearestInt(),
+                        juce::Justification::centred);
+
+            g.setColour (colours::active.withAlpha (0.75f));
+            g.setFont (juce::Font (juce::FontOptions (8.5f)).withExtraKerningFactor (0.30f));
+            g.drawText ("CALIBRATED", body.translated (0.0f, 14.0f).toNearestInt(),
+                        juce::Justification::centred);
+        }
+        else
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.88f));
+            g.setFont (juce::Font (juce::FontOptions (21.0f)).withExtraKerningFactor (0.04f));
+            g.drawText (valueText, body.toNearestInt(), juce::Justification::centred);
+        }
     }
     else
     {
@@ -182,7 +206,7 @@ void CarveLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& 
     g.fillEllipse (juce::Rectangle<float> (14.0f, 14.0f).withCentre ({ thumbX, pill.getCentreY() }));
 
     g.setColour (juce::Colours::white.withAlpha (on ? 0.85f : 0.45f));
-    g.setFont (juce::Font (juce::FontOptions (10.5f)).withExtraKerningFactor (0.24f));
+    g.setFont (juce::Font (juce::FontOptions (10.5f)).withExtraKerningFactor (0.16f));
     g.drawText (button.getButtonText(),
                 b.withTrimmedLeft (56.0f).toNearestInt(), juce::Justification::centredLeft);
 }
@@ -422,15 +446,18 @@ void SpectrumView::paint (juce::Graphics& g)
     // ---- status pill ---------------------------------------------------------------
     const int state = processor.uiState.load();
     const float carvedDb = processor.uiCarvedDb.load();
+    const bool autoOn = processor.apvts.getRawParameterValue ("autocal")->load() > 0.5f;
 
     juce::Colour sc = state == 2 ? colours::active
                                  : (state == 1 ? colours::standby
                                                : juce::Colour (0xff5a5d66));
     juce::String st = state == 2 ? "CARVING " + juce::String (carvedDb, 1) + " dB"
                                  : (state == 1 ? "STANDBY" : "NO SIDECHAIN");
+    if (autoOn && state == 2)
+        st = "AUTO  " + st;
 
-    const auto pill = juce::Rectangle<float> (150.0f, 22.0f)
-                          .withPosition (plot.getRight() - 150.0f, plot.getY());
+    const auto pill = juce::Rectangle<float> (176.0f, 22.0f)
+                          .withPosition (plot.getRight() - 176.0f, plot.getY());
     g.setColour (juce::Colour (0xff101116).withAlpha (0.9f));
     g.fillRoundedRectangle (pill, 11.0f);
     g.setColour (sc.withAlpha (0.5f));
@@ -440,6 +467,33 @@ void SpectrumView::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.80f));
     g.setFont (juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.14f));
     g.drawText (st, pill.withTrimmedLeft (20.0f).toNearestInt(), juce::Justification::centred);
+
+    // ---- what your speakers cannot tell you ----------------------------------------
+    // Laptop speakers roll off below ~250 Hz, which is exactly where masking lives.
+    // The plugin measures the signal, not the room, so show that range as a number.
+    if (state == 2)
+    {
+        const float lowDb = processor.uiLowCarvedDb.load();
+        const float depth = processor.uiAppliedDepth.load();
+
+        const auto sub = juce::Rectangle<float> (176.0f, 30.0f)
+                             .withPosition (plot.getRight() - 176.0f, plot.getY() + 26.0f);
+
+        // Backing plate — the carved ribbons run underneath and would swallow the text.
+        g.setColour (juce::Colour (0xff101116).withAlpha (0.82f));
+        g.fillRoundedRectangle (sub.expanded (6.0f, 2.0f), 6.0f);
+
+        g.setColour (juce::Colours::white.withAlpha (0.30f));
+        g.setFont (juce::Font (juce::FontOptions (8.0f)).withExtraKerningFactor (0.18f));
+        g.drawText ("BELOW 250 Hz  (LAPTOP-BLIND)",
+                    sub.withHeight (11.0f).toNearestInt(), juce::Justification::centredRight);
+
+        g.setColour (colours::carved.withAlpha (0.85f));
+        g.setFont (juce::Font (juce::FontOptions (11.0f)));
+        g.drawText (juce::String (lowDb, 1) + " dB    depth "
+                        + juce::String (juce::roundToInt (depth * 100.0f)) + "%",
+                    sub.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredRight);
+    }
 
     // ---- routing hint when nothing is connected ------------------------------------
     if (state == 0)
@@ -567,6 +621,30 @@ CarveAudioProcessorEditor::CarveAudioProcessorEditor (CarveAudioProcessor& p)
     addAndMakeVisible (ecoToggle);
     ecoAtt = std::make_unique<ButtonAttachment> (processor.apvts, "eco", ecoToggle);
 
+    autoToggle.setLookAndFeel (&lookAndFeel);
+    autoToggle.setBufferedToImage (true);
+    addAndMakeVisible (autoToggle);
+    autoAtt = std::make_unique<ButtonAttachment> (processor.apvts, "autocal", autoToggle);
+
+    // The big knob switches meaning between depth and bias, so refresh it (and only it)
+    // when the mode changes — never per frame, the metallic body is expensive to draw.
+    // onStateChange also fires on hover and press, so bail out unless the mode really
+    // changed — repainting the metallic knob on every mouse-over is not free.
+    auto refreshAutoMode = [this]
+    {
+        const bool on = autoToggle.getToggleState();
+        if (on == lookAndFeel.autoMode && amountKnob.getName().isNotEmpty())
+            return;
+
+        lookAndFeel.autoMode = on;
+        amountKnob.setName (on ? "AUTO TRIM" : "AMOUNT");
+        amountKnob.repaint();
+    };
+    autoToggle.onStateChange = refreshAutoMode;
+
+    amountKnob.setName ({});      // force the first refresh to take effect
+    refreshAutoMode();
+
     creditsButton.setLookAndFeel (&lookAndFeel);
     creditsButton.onClick = [this] { credits.setVisible (true); credits.toFront (false); };
     addAndMakeVisible (creditsButton);
@@ -583,6 +661,7 @@ CarveAudioProcessorEditor::~CarveAudioProcessorEditor()
     mixKnob.setLookAndFeel (nullptr);
     outputKnob.setLookAndFeel (nullptr);
     ecoToggle.setLookAndFeel (nullptr);
+    autoToggle.setLookAndFeel (nullptr);
     creditsButton.setLookAndFeel (nullptr);
 }
 
@@ -613,11 +692,12 @@ void CarveAudioProcessorEditor::resized()
     spectrum.setBounds (20, 64, getWidth() - 40, 288);
     creditsButton.setBounds (getWidth() - 124, 16, 100, 26);
 
-    ecoToggle.setBounds (56, 424, 140, 30);
-    smoothKnob.setBounds (208, 376, 100, 134);
-    amountKnob.setBounds (338, 362, 144, 158);
-    mixKnob.setBounds (512, 376, 100, 134);
-    outputKnob.setBounds (636, 376, 100, 134);
+    autoToggle.setBounds (28, 398, 190, 30);
+    ecoToggle.setBounds (28, 442, 190, 30);
+    smoothKnob.setBounds (232, 376, 100, 134);
+    amountKnob.setBounds (358, 362, 144, 158);
+    mixKnob.setBounds (530, 376, 100, 134);
+    outputKnob.setBounds (652, 376, 100, 134);
 
     credits.setBounds (getLocalBounds());
 }
