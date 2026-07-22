@@ -69,11 +69,9 @@ public:
         so there is no servo loop to oscillate. */
     float getRequiredDepth() const noexcept             { return requiredDepth; }
 
-    // Instrumentation for diagnosing the calibration in a running host.
-    int   getNumBands()  const noexcept                 { return numBands; }
-    float getDbgPeakP()  const noexcept                 { return dbgPeakP; }
-    float getDbgMeanR()  const noexcept                 { return dbgMeanR; }
-    int   getDbgVoting() const noexcept                 { return dbgVoting; }
+    /** True only while the priority source is actually performing, so the calibration
+        never learns from the tail between phrases. */
+    bool isMeasurementValid() const noexcept            { return measurementValid; }
 
     /** dryOut = delay-aligned input, wetOut = carved resynthesis (same latency). */
     void processSample (float mainIn, float refAIn, float refBIn,
@@ -125,8 +123,12 @@ private:
     float requiredDepth = 0.0f;
     float lowCarveGain = 1.0f;
 
-    float dbgPeakP = 0.0f, dbgMeanR = 0.0f;
-    int   dbgVoting = 0;
+    // Running peak of the reference, used to tell "performing" from "gap". An absolute
+    // threshold cannot do this: breath, room tone and reverb tails all sit far above
+    // digital silence, so the gate has to be relative to the source's own level.
+    float refPeakSlow = 0.0f;
+    float peakDecay = 0.999f;
+    bool  measurementValid = false;
 
     float depth = 0.0f, targetDepth = 0.0f, smoothness = 0.5f;
     bool refAOn = false, refBOn = false;
@@ -147,6 +149,7 @@ public:
     //==========================================================================
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
+    void reset() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
@@ -180,13 +183,6 @@ public:
     std::atomic<float> uiCarvedDb { 0.0f };     // average gain reduction, dB (<= 0)
     std::atomic<int>   uiFftSize { CarveEngine::maxFftSize };
     std::atomic<float> uiAppliedDepth { 0.0f }; // depth actually in use (0..1)
-
-    // Live instrumentation for the calibration, shown in the UI while diagnosing.
-    std::atomic<float> uiRawRequired { 0.0f };  // measured requirement, pre-smoothing
-    std::atomic<int>   uiNumBands    { 0 };     // critical bands actually built
-    std::atomic<int>   uiVoting      { 0 };     // bands passing the presence gate
-    std::atomic<float> uiMeanR       { 0.0f };  // mean priority-to-masker ratio
-
     std::atomic<float> uiLowCarvedDb { 0.0f };  // carving below 250 Hz — the range
                                                 // laptop speakers cannot reproduce
 

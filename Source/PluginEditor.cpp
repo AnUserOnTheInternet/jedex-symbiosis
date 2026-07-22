@@ -124,15 +124,13 @@ void CarveLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y,
 
             g.setColour (juce::Colours::white.withAlpha (0.88f));
             g.setFont (juce::Font (juce::FontOptions (19.0f)).withExtraKerningFactor (0.04f));
+            // No status claim here: the knob cannot know whether a measurement is
+            // actually running, and a green "CALIBRATED" badge shown with no sidechain
+            // connected would simply be untrue. The caption under the knob already says
+            // AUTO TRIM, and the pill above reports the real state.
             g.drawText (pct == 0 ? "AUTO" : (pct > 0 ? "+" + juce::String (pct) + "%"
                                                      : juce::String (pct) + "%"),
-                        body.translated (0.0f, -7.0f).toNearestInt(),
-                        juce::Justification::centred);
-
-            g.setColour (colours::active.withAlpha (0.75f));
-            g.setFont (juce::Font (juce::FontOptions (8.5f)).withExtraKerningFactor (0.30f));
-            g.drawText ("CALIBRATED", body.translated (0.0f, 14.0f).toNearestInt(),
-                        juce::Justification::centred);
+                        body.toNearestInt(), juce::Justification::centred);
         }
         else
         {
@@ -478,23 +476,33 @@ void SpectrumView::paint (juce::Graphics& g)
         const float lowDb = processor.uiLowCarvedDb.load();
         const float depth = processor.uiAppliedDepth.load();
 
-        const auto sub = juce::Rectangle<float> (176.0f, 30.0f)
+        const auto sub = juce::Rectangle<float> (176.0f, 32.0f)
                              .withPosition (plot.getRight() - 176.0f, plot.getY() + 26.0f);
 
         // Backing plate — the carved ribbons run underneath and would swallow the text.
+        // Expanded vertically only, so its right edge still lines up with the pill above.
         g.setColour (juce::Colour (0xff101116).withAlpha (0.82f));
-        g.fillRoundedRectangle (sub.expanded (6.0f, 2.0f), 6.0f);
+        g.fillRoundedRectangle (sub.expanded (0.0f, 3.0f), 6.0f);
 
-        g.setColour (juce::Colours::white.withAlpha (0.30f));
-        g.setFont (juce::Font (juce::FontOptions (8.0f)).withExtraKerningFactor (0.18f));
-        g.drawText ("BELOW 250 Hz  (LAPTOP-BLIND)",
-                    sub.withHeight (11.0f).toNearestInt(), juce::Justification::centredRight);
+        // Two separately captioned figures. Printing the global depth under a "below
+        // 250 Hz" heading would read as a sub-250 Hz number, which it is not.
+        auto row = [&g, &sub] (float dy, const juce::String& caption,
+                               const juce::String& value, juce::Colour valueColour)
+        {
+            const auto r = sub.withHeight (14.0f).translated (0.0f, dy);
+            g.setColour (juce::Colours::white.withAlpha (0.32f));
+            g.setFont (juce::Font (juce::FontOptions (8.0f)).withExtraKerningFactor (0.16f));
+            g.drawText (caption, r.toNearestInt(), juce::Justification::centredLeft);
+            g.setColour (valueColour);
+            g.setFont (juce::Font (juce::FontOptions (10.5f)));
+            g.drawText (value, r.toNearestInt(), juce::Justification::centredRight);
+        };
 
-        g.setColour (colours::carved.withAlpha (0.85f));
-        g.setFont (juce::Font (juce::FontOptions (11.0f)));
-        g.drawText (juce::String (lowDb, 1) + " dB    depth "
-                        + juce::String (juce::roundToInt (depth * 100.0f)) + "%",
-                    sub.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredRight);
+        row (0.0f,  "BELOW 250 Hz  (LAPTOP-BLIND)", juce::String (lowDb, 1) + " dB",
+             colours::carved.withAlpha (0.85f));
+        row (15.0f, "AUTO DEPTH",
+             juce::String (juce::roundToInt (depth * 100.0f)) + " %",
+             colours::active.withAlpha (0.85f));
     }
 
 
@@ -513,8 +521,8 @@ void SpectrumView::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (notRouted ? 0.55f : 0.22f));
         g.setFont (juce::Font (juce::FontOptions (10.5f)));
         g.drawText (notRouted
-                        ? "Open the wrapper menu > Processing > Connections and set Priority A to your sidechain"
-                        : "FL Studio: wrapper menu > Processing > Connections",
+                        ? "Assign your send to the Priority A input in the host's plug-in routing   (FL Studio: Processing > Connections)"
+                        : "Send your lead / vocal / kick to this plug-in's Priority A sidechain input",
                     plot.translated (0.0f, 22.0f).toNearestInt(), juce::Justification::centred);
     }
 }
@@ -522,12 +530,73 @@ void SpectrumView::paint (juce::Graphics& g)
 //==============================================================================
 // CreditsOverlay
 //==============================================================================
+namespace
+{
+    /** Artwork arrives in whatever format it was exported in. A logo that carries no
+        transparency was drawn for a light background and would sit on this dark panel as
+        a glaring white tile, so key it on luminance instead: alpha carries the artwork
+        and white carries the colour. Ink becomes solid, mid greys stay translucent, and
+        the original paper disappears. Anything that already ships real transparency is
+        left exactly as the artist made it. */
+    juce::Image prepareLogoForDarkUI (const juce::Image& src)
+    {
+        if (! src.isValid())
+            return src;
+
+        if (src.hasAlphaChannel())
+        {
+            const int sx = juce::jmax (1, src.getWidth()  / 48);
+            const int sy = juce::jmax (1, src.getHeight() / 48);
+
+            for (int y = 0; y < src.getHeight(); y += sy)
+                for (int x = 0; x < src.getWidth(); x += sx)
+                    if (src.getPixelAt (x, y).getAlpha() < 16)
+                        return src;                  // genuinely transparent already
+        }
+
+        // Work at panel resolution: these files are up to 2268 px wide and the credits
+        // card shows them at ~140, so converting the originals would stall opening the
+        // editor on a modest machine for no visible gain.
+        juce::Image work = src;
+        const int maxSide = juce::jmax (src.getWidth(), src.getHeight());
+        if (maxSide > 512)
+            work = src.rescaled (src.getWidth()  * 512 / maxSide,
+                                 src.getHeight() * 512 / maxSide,
+                                 juce::Graphics::highResamplingQuality);
+
+        juce::Image out (juce::Image::ARGB, work.getWidth(), work.getHeight(), true);
+        const juce::Image::BitmapData in (work, juce::Image::BitmapData::readOnly);
+        juce::Image::BitmapData dst (out, juce::Image::BitmapData::writeOnly);
+
+        for (int y = 0; y < work.getHeight(); ++y)
+        {
+            for (int x = 0; x < work.getWidth(); ++x)
+            {
+                const auto c = in.getPixelColour (x, y);
+                const float lum = 0.299f * c.getFloatRed()
+                                + 0.587f * c.getFloatGreen()
+                                + 0.114f * c.getFloatBlue();
+
+                // Headroom under pure white keeps JPEG ringing from leaving a grey haze
+                // around the artwork once the background is gone.
+                dst.setPixelColour (x, y, juce::Colours::white
+                                              .withAlpha (juce::jlimit (0.0f, 1.0f,
+                                                              (0.94f - lum) / 0.72f)));
+            }
+        }
+
+        return out;
+    }
+}
+
 CreditsOverlay::CreditsOverlay()
 {
-    jedexLogo  = juce::ImageFileFormat::loadFrom (BinaryData::jedex_logo_png,
-                                                  (size_t) BinaryData::jedex_logo_pngSize);
-    bigiceLogo = juce::ImageFileFormat::loadFrom (BinaryData::bigice_logo_png,
-                                                  (size_t) BinaryData::bigice_logo_pngSize);
+    jedexLogo  = prepareLogoForDarkUI (
+                     juce::ImageFileFormat::loadFrom (BinaryData::jedex_logo_png,
+                                                      (size_t) BinaryData::jedex_logo_pngSize));
+    bigiceLogo = prepareLogoForDarkUI (
+                     juce::ImageFileFormat::loadFrom (BinaryData::bigice_logo_png,
+                                                      (size_t) BinaryData::bigice_logo_pngSize));
     setVisible (false);
 }
 
@@ -704,10 +773,14 @@ void CarveAudioProcessorEditor::resized()
 
     autoToggle.setBounds (28, 398, 190, 30);
     ecoToggle.setBounds (28, 442, 190, 30);
-    smoothKnob.setBounds (232, 376, 100, 134);
-    amountKnob.setBounds (358, 362, 144, 158);
-    mixKnob.setBounds (530, 376, 100, 134);
-    outputKnob.setBounds (652, 376, 100, 134);
+
+    // Every knob shares the same bottom edge so the four captions sit on one baseline —
+    // the big AMOUNT knob is taller, it just starts higher. Even 26 px gaps, and the
+    // group is centred in the space left of the toggles rather than in the window.
+    smoothKnob.setBounds (256, 376, 100, 134);
+    amountKnob.setBounds (382, 354, 144, 156);
+    mixKnob.setBounds    (552, 376, 100, 134);
+    outputKnob.setBounds (678, 376, 100, 134);
 
     credits.setBounds (getLocalBounds());
 }
