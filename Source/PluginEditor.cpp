@@ -497,18 +497,6 @@ void SpectrumView::paint (juce::Graphics& g)
                     sub.withTrimmedTop (12.0f).toNearestInt(), juce::Justification::centredRight);
     }
 
-    // ---- calibration instrumentation (diagnostic build) ----------------------------
-    {
-        const auto dbg = juce::Rectangle<float> (plot.getWidth(), 12.0f)
-                             .withPosition (plot.getX(), plot.getY() + 16.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.40f));
-        g.setFont (juce::Font (juce::FontOptions (9.5f)));
-        g.drawText ("bands " + juce::String (processor.uiNumBands.load())
-                      + "   voting " + juce::String (processor.uiVoting.load())
-                      + "   meanR " + juce::String (processor.uiMeanR.load(), 2)
-                      + "   raw " + juce::String (processor.uiRawRequired.load(), 3),
-                    dbg.toNearestInt(), juce::Justification::centredLeft);
-    }
 
     // ---- routing hints -------------------------------------------------------------
     if (state == 0 || state == 3)

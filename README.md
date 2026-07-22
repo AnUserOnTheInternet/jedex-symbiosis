@@ -11,9 +11,16 @@ zero manual EQ.
 1. Put **JeDEx CARVE** on the mixer track/bus you want to duck spectrally
    (e.g. the bus with all your layers, or the instrumental under a vocal).
 2. Select the priority track (your lead/vocal/kick), right-click the target
-   track's routing arrow → **Sidechain to this track**.
-3. Open the CARVE wrapper → **Processing → Connections** and map the
-   sidechain to **Priority A**. (A second source can go to **Priority B**.)
+   track's routing arrow → **Sidechain to this track**
+   (*not* "…to this track **only**", or the priority track stops reaching the
+   master and you will not hear it any more).
+3. **This step is mandatory and easy to miss.** Open the CARVE wrapper menu →
+   **Processing → Connections**, and on the row **2. Priority A (Sidechain)**
+   drag the small box upward until it reads **1**. Until you do, FL feeds the
+   plugin its *own* track audio on that input — CARVE ends up measuring itself,
+   auto-calibration correctly finds nothing to fix, and the depth sits at 0 %.
+   CARVE detects exactly this and shows **SIDECHAIN NOT ROUTED** in red, so you
+   never have to guess. A second source can go to **Priority B** the same way.
 4. The status pill switches to **CARVING** and the spectrum shows the bite.
 
 Controls: **Amount** (carve depth — at 100 % the carve is a true Wiener
