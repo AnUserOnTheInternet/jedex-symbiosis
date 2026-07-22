@@ -108,9 +108,13 @@ void CarveEngine::measureRequiredDepth() noexcept
         peakP = juce::jmax (peakP, sp);
     }
 
+    dbgPeakP = peakP;
+
     if (peakP <= 1.0e-9f)
     {
         requiredDepth = 0.0f;
+        dbgMeanR = 0.0f;
+        dbgVoting = 0;
         return;
     }
 
@@ -126,7 +130,9 @@ void CarveEngine::measureRequiredDepth() noexcept
     // form contains a 1/mask term which saturates the moment the priority drops even
     // 3 dB under the main content — i.e. on ordinary material — pinning auto mode at
     // maximum depth. Masking excess is bounded, monotonic and behaves like the ear.
-    float wsum = 0.0f, dsum = 0.0f;
+    float wsum = 0.0f, dsum = 0.0f, rsum = 0.0f;
+    int voting = 0;
+
     for (int b = 0; b < numBands; ++b)
     {
         const float P = bandP[(size_t) b];
@@ -135,6 +141,8 @@ void CarveEngine::measureRequiredDepth() noexcept
 
         const float M = bandM[(size_t) b] + 1.0e-12f;
         const float R = P / M;                       // priority-to-masker energy ratio
+        rsum += R;
+        ++voting;
 
         // Bands that are already clear stay in the average contributing zero, so a mix
         // that only collides here and there is not treated like one that collides
@@ -151,6 +159,9 @@ void CarveEngine::measureRequiredDepth() noexcept
         dsum += w * excessDb;
         wsum += w;
     }
+
+    dbgVoting = voting;
+    dbgMeanR  = voting > 0 ? rsum / (float) voting : 0.0f;
 
     // kMaxExcessDb of average masking excess earns full depth; parity earns a gentle
     // touch. Monotonic and bounded by construction — it cannot run away.
@@ -552,6 +563,12 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     uiAppliedDepth.store (depthNow);
+    uiRawRequired.store (0.5f * (engines[0].getRequiredDepth()
+                               + engines[1].getRequiredDepth()));
+    uiNumBands.store (engines[0].getNumBands());
+    uiVoting.store (engines[0].getDbgVoting());
+    uiMeanR.store (engines[0].getDbgMeanR());
+
     engines[0].setDepth (depthNow);      engines[1].setDepth (depthNow);
     engines[0].setSmoothness (smoothNow); engines[1].setSmoothness (smoothNow);
     mixSm.setTargetValue (mixParam->load());

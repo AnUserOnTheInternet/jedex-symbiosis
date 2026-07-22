@@ -69,6 +69,12 @@ public:
         so there is no servo loop to oscillate. */
     float getRequiredDepth() const noexcept             { return requiredDepth; }
 
+    // Instrumentation for diagnosing the calibration in a running host.
+    int   getNumBands()  const noexcept                 { return numBands; }
+    float getDbgPeakP()  const noexcept                 { return dbgPeakP; }
+    float getDbgMeanR()  const noexcept                 { return dbgMeanR; }
+    int   getDbgVoting() const noexcept                 { return dbgVoting; }
+
     /** dryOut = delay-aligned input, wetOut = carved resynthesis (same latency). */
     void processSample (float mainIn, float refAIn, float refBIn,
                         float& dryOut, float& wetOut) noexcept;
@@ -118,6 +124,9 @@ private:
 
     float requiredDepth = 0.0f;
     float lowCarveGain = 1.0f;
+
+    float dbgPeakP = 0.0f, dbgMeanR = 0.0f;
+    int   dbgVoting = 0;
 
     float depth = 0.0f, targetDepth = 0.0f, smoothness = 0.5f;
     bool refAOn = false, refBOn = false;
@@ -171,6 +180,13 @@ public:
     std::atomic<float> uiCarvedDb { 0.0f };     // average gain reduction, dB (<= 0)
     std::atomic<int>   uiFftSize { CarveEngine::maxFftSize };
     std::atomic<float> uiAppliedDepth { 0.0f }; // depth actually in use (0..1)
+
+    // Live instrumentation for the calibration, shown in the UI while diagnosing.
+    std::atomic<float> uiRawRequired { 0.0f };  // measured requirement, pre-smoothing
+    std::atomic<int>   uiNumBands    { 0 };     // critical bands actually built
+    std::atomic<int>   uiVoting      { 0 };     // bands passing the presence gate
+    std::atomic<float> uiMeanR       { 0.0f };  // mean priority-to-masker ratio
+
     std::atomic<float> uiLowCarvedDb { 0.0f };  // carving below 250 Hz — the range
                                                 // laptop speakers cannot reproduce
 
