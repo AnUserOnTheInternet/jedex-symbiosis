@@ -490,7 +490,34 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // ---- sidechain activity gate (skips reference FFTs while silent) --------------
     // Runs before the parameter stage because auto-calibration needs to know whether a
     // priority source is actually present this block.
-    auto refPeak = [this, &buffer, numSamples] (int busIndex) -> float
+    auto mainProbe = getBusBuffer (buffer, true, 0);
+    const float* probeL = mainProbe.getNumChannels() > 0 ? mainProbe.getReadPointer (0)
+                                                         : nullptr;
+
+    // A host that has not been told which sidechain feeds which input hands the track's
+    // OWN audio to the extra buses. The plugin then measures itself: the reference and
+    // the content are the same signal, every band reads as already clear, and auto mode
+    // sits at zero forever while manual carving still appears to work. Detect that and
+    // treat the bus as unrouted so the UI can say so instead of failing in silence.
+    auto mirrorsMain = [&buffer, numSamples, probeL] (juce::AudioBuffer<float>& scBuf) -> bool
+    {
+        if (probeL == nullptr || scBuf.getNumChannels() == 0)
+            return false;
+
+        juce::ignoreUnused (buffer);
+        const float* s = scBuf.getReadPointer (0);
+        float maxDiff = 0.0f, maxMain = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            maxDiff = juce::jmax (maxDiff, std::abs (s[i] - probeL[i]));
+            maxMain = juce::jmax (maxMain, std::abs (probeL[i]));
+        }
+        return maxMain > 1.0e-4f && maxDiff <= maxMain * 1.0e-4f;
+    };
+
+    bool mirrored = false;
+
+    auto refPeak = [this, &buffer, numSamples, &mirrorsMain, &mirrored] (int busIndex) -> float
     {
         if (busIndex >= getBusCount (true))
             return -1.0f;
@@ -500,6 +527,12 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         auto sc = getBusBuffer (buffer, true, busIndex);
         if (sc.getNumChannels() == 0)
             return -1.0f;
+
+        if (mirrorsMain (sc))
+        {
+            mirrored = true;
+            return -1.0f;               // not a real reference — the input echoed back
+        }
 
         float m = 0.0f;
         for (int ch = 0; ch < sc.getNumChannels(); ++ch)
@@ -520,7 +553,8 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     engines[1].setRefsActive (aOn, bOn);
 
     const bool connected = (pA >= 0.0f) || (pB >= 0.0f);
-    uiState.store (! connected ? 0 : ((aOn || bOn) ? 2 : 1));
+    uiState.store (mirrored && ! connected ? 3
+                                           : (! connected ? 0 : ((aOn || bOn) ? 2 : 1)));
 
     // ---- parameters ---------------------------------------------------------------
     const float amountNow = amountParam->load();

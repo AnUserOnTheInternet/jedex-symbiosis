@@ -450,9 +450,11 @@ void SpectrumView::paint (juce::Graphics& g)
 
     juce::Colour sc = state == 2 ? colours::active
                                  : (state == 1 ? colours::standby
-                                               : juce::Colour (0xff5a5d66));
+                                 : (state == 3 ? juce::Colour (0xffe8564c)
+                                               : juce::Colour (0xff5a5d66)));
     juce::String st = state == 2 ? "CARVING " + juce::String (carvedDb, 1) + " dB"
-                                 : (state == 1 ? "STANDBY" : "NO SIDECHAIN");
+                                 : (state == 1 ? "STANDBY"
+                                 : (state == 3 ? "SIDECHAIN NOT ROUTED" : "NO SIDECHAIN"));
     if (autoOn && state == 2)
         st = "AUTO  " + st;
 
@@ -508,16 +510,23 @@ void SpectrumView::paint (juce::Graphics& g)
                     dbg.toNearestInt(), juce::Justification::centredLeft);
     }
 
-    // ---- routing hint when nothing is connected ------------------------------------
-    if (state == 0)
+    // ---- routing hints -------------------------------------------------------------
+    if (state == 0 || state == 3)
     {
-        g.setColour (juce::Colours::white.withAlpha (0.38f));
+        const bool notRouted = (state == 3);
+
+        g.setColour ((notRouted ? juce::Colour (0xffe8564c) : juce::Colours::white)
+                         .withAlpha (notRouted ? 0.90f : 0.38f));
         g.setFont (juce::Font (juce::FontOptions (13.0f)));
-        g.drawText ("Route your lead / vocal / kick into the sidechain input",
+        g.drawText (notRouted ? "The sidechain input is receiving this track, not your priority sound"
+                              : "Route your lead / vocal / kick into the sidechain input",
                     plot.toNearestInt(), juce::Justification::centred);
-        g.setColour (juce::Colours::white.withAlpha (0.22f));
-        g.setFont (juce::Font (juce::FontOptions (10.0f)));
-        g.drawText ("FL Studio: wrapper menu > Processing > Connections",
+
+        g.setColour (juce::Colours::white.withAlpha (notRouted ? 0.55f : 0.22f));
+        g.setFont (juce::Font (juce::FontOptions (10.5f)));
+        g.drawText (notRouted
+                        ? "Open the wrapper menu > Processing > Connections and set Priority A to your sidechain"
+                        : "FL Studio: wrapper menu > Processing > Connections",
                     plot.translated (0.0f, 22.0f).toNearestInt(), juce::Justification::centred);
     }
 }
