@@ -73,6 +73,7 @@ private:
 
     CarveAudioProcessor& processor;
     juce::Image bgCache;
+    int bgScale = 1;
 
     static constexpr int kPts = 140;
     std::array<float, kPts> refCurve {}, mainCurve {}, carveCurve {};
@@ -85,13 +86,17 @@ private:
 class CreditsOverlay : public juce::Component
 {
 public:
-    CreditsOverlay();
+    CreditsOverlay() { setVisible (false); }
 
     void paint (juce::Graphics&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void visibilityChanged() override;
 
 private:
+    void ensureLogosLoaded();
+
     juce::Image jedexLogo, bigiceLogo;
+    bool logosLoaded = false;
     juce::Rectangle<int> cardArea, jedexArea, bigiceArea, closeArea;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CreditsOverlay)

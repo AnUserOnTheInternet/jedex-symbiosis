@@ -152,6 +152,7 @@ public:
     void reset() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     //==========================================================================
     juce::AudioProcessorEditor* createEditor() override;
@@ -215,6 +216,7 @@ private:
     int curOrder = CarveEngine::maxOrder;
     int holdA = 0, holdB = 0;
     float autoDepthSm = 0.0f;   // slow-settling auto depth (message-free, audio thread)
+    bool  autoPrimed = false;   // snap to the first real measurement, then smooth
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CarveAudioProcessor)
 };

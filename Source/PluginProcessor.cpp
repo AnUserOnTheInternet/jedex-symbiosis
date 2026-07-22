@@ -287,8 +287,18 @@ void CarveEngine::processFrame() noexcept
         float& ms = mainEnergySm[(size_t) k];
         ms += (mE > ms ? engAtk : engRel) * (mE - ms);
 
-        const float mask = anyRef ? rs / (rs + mE + eps) : 0.0f;
-        const float t = 1.0f - depth * mask;
+        // Build the mask from the SMOOTHED content, not the instantaneous periodogram.
+        // Dividing a smoothed reference by a bin that flickers frame to frame is the
+        // textbook recipe for musical noise, and it also made the applied carve disagree
+        // with what the calibration measured and the meters displayed. Same envelope on
+        // both sides — consistent and quiet.
+        const float mask = anyRef ? rs / (rs + ms + eps) : 0.0f;
+
+        // Floor the per-bin cut. A Wiener mask left unbounded drives isolated bins to
+        // near-silence at high depth, which is heard as the classic watery/metallic
+        // artefact; capping the deepest cut at about -26 dB keeps the carve musical
+        // while still opening plenty of room.
+        const float t = juce::jmax (0.05f, 1.0f - depth * mask);
 
         float& g = gain[(size_t) k];
         g += (t < g ? gAtk : gRel) * (t - g);
@@ -332,16 +342,20 @@ void CarveEngine::processFrame() noexcept
     }
     carvedGainLin = std::sqrt (juce::jlimit (0.0f, 1.0f, keptE / totE));
 
-    // Mean carve below kLowHz: what the user's laptop speakers physically cannot show them.
+    // Carve below kLowHz — the range laptop speakers cannot reproduce. Weight by the
+    // content actually present: a bin the reference wants but the main has nothing in
+    // still shows full gain reduction, and averaging those in would report low-end
+    // ducking that removes no audible energy. Energy-weighting reports what is really
+    // being taken out.
     {
-        float lowSum = 0.0f;
-        int lowCount = 0;
+        float wSum = eps, gSum = 0.0f;
         for (int k = 1; k < lowBinMax; ++k)
         {
-            lowSum += gSmooth[(size_t) k];
-            ++lowCount;
+            const float w = mainEnergySm[(size_t) k];
+            wSum += w;
+            gSum += w * gSmooth[(size_t) k];
         }
-        lowCarveGain = lowCount > 0 ? lowSum / (float) lowCount : 1.0f;
+        lowCarveGain = gSum / wSum;
     }
 
     // ---- rebuild the conjugate-symmetric negative half, inverse, WOLA -------------
@@ -447,6 +461,7 @@ void CarveAudioProcessor::prepareToPlay (double sampleRate, int)
 
     holdA = holdB = 0;
     autoDepthSm = 0.0f;
+    autoPrimed = false;
     uiFftSize.store (1 << curOrder);
     setLatencySamples (1 << curOrder);
 }
@@ -459,6 +474,7 @@ void CarveAudioProcessor::reset()
     engines[0].reset();
     engines[1].reset();
     autoDepthSm = 0.0f;
+    autoPrimed = false;
     holdA = holdB = 0;
     uiState.store (0);
     uiCarvedDb.store (0.0f);
@@ -615,14 +631,27 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (v1) { measured += engines[1].getRequiredDepth(); ++n; }
             measured /= (float) n;
 
-            // Settle over seconds, not milliseconds: we are calibrating to the character
-            // of the song, not reacting to individual transients. Rises a little faster
-            // than it falls so a busy chorus is covered promptly.
-            const double sr = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
-            const double tc = measured > autoDepthSm ? 1.5 : 3.0;
-            const float  c  = juce::jlimit (0.0f, 1.0f,
-                                  1.0f - (float) std::exp (-(double) numSamples / (sr * tc)));
-            autoDepthSm += c * (measured - autoDepthSm);
+            if (! autoPrimed)
+            {
+                // Snap straight to the first genuine measurement instead of ramping up
+                // from zero over several seconds. That makes the depth correct from the
+                // first moment the priority plays, so an offline bounce matches what was
+                // auditioned and two renders of the same passage are identical rather
+                // than differing across a slow warm-up.
+                autoDepthSm = measured;
+                autoPrimed = true;
+            }
+            else
+            {
+                // Then settle over seconds, not milliseconds: we calibrate to the
+                // character of the song, not to individual transients. Rises a little
+                // faster than it falls so a busy chorus is covered promptly.
+                const double sr = getSampleRate() > 0.0 ? getSampleRate() : 48000.0;
+                const double tc = measured > autoDepthSm ? 1.5 : 3.0;
+                const float  c  = juce::jlimit (0.0f, 1.0f,
+                                      1.0f - (float) std::exp (-(double) numSamples / (sr * tc)));
+                autoDepthSm += c * (measured - autoDepthSm);
+            }
         }
 
         // The Amount knob becomes a bias: 0.5 = trust the measurement, and each half
@@ -705,6 +734,50 @@ void CarveAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                              engines[1].getCarvedGainLin())));
     uiLowCarvedDb.store (effective (juce::jmin (engines[0].getLowCarveGainLin(),
                                                 engines[1].getLowCarveGainLin())));
+}
+
+void CarveAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                                                juce::MidiBuffer&)
+{
+    juce::ScopedNoDenormals noDenormals;
+
+    const int numSamples = buffer.getNumSamples();
+    if (numSamples == 0)
+        return;
+
+    // The plug-in reports fftSize samples of latency, and the host time-aligns everything
+    // else to it. If bypass passed audio straight through, the bypassed signal would jump
+    // that far EARLIER than the processed signal, so every A/B comparison would click and
+    // the null test would fail. Run the same delay line and emit only its dry, aligned
+    // output, so bypass is a true latency-matched passthrough.
+    auto mainIn = getBusBuffer (buffer, true, 0);
+    if (mainIn.getNumChannels() == 0)
+        return;
+
+    const float* mL = mainIn.getReadPointer (0);
+    const float* mR = mainIn.getNumChannels() > 1 ? mainIn.getReadPointer (1) : mL;
+
+    auto mainOut = getBusBuffer (buffer, false, 0);
+    float* oL = mainOut.getWritePointer (0);
+    float* oR = mainOut.getNumChannels() > 1 ? mainOut.getWritePointer (1) : nullptr;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float dry, wet;
+        engines[0].processSample (mL[i], 0.0f, 0.0f, dry, wet);
+        const float left = dry;
+        engines[1].processSample (mR[i], 0.0f, 0.0f, dry, wet);
+        const float right = dry;
+
+        oL[i] = left;
+        if (oR != nullptr)
+            oR[i] = right;
+    }
+
+    uiState.store (0);
+    uiCarvedDb.store (0.0f);
+    uiLowCarvedDb.store (0.0f);
+    uiAppliedDepth.store (0.0f);
 }
 
 //==============================================================================

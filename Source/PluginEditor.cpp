@@ -261,8 +261,13 @@ void SpectrumView::rebuildBackground()
     if (w <= 0 || h <= 0)
         return;
 
-    bgCache = juce::Image (juce::Image::ARGB, w, h, true);
+    // Render the static chrome at 2x and blit it scaled, so the grid, labels and legend
+    // stay crisp on 125–200 % display scaling instead of being upsampled from a
+    // logical-size bitmap while everything drawn live around them is native resolution.
+    bgScale = 2;
+    bgCache = juce::Image (juce::Image::ARGB, w * bgScale, h * bgScale, true);
     juce::Graphics g (bgCache);
+    g.addTransform (juce::AffineTransform::scale ((float) bgScale));
 
     const auto frame = juce::Rectangle<float> (0, 0, (float) w, (float) h);
     g.setColour (colours::panel);
@@ -355,7 +360,7 @@ void SpectrumView::paint (juce::Graphics& g)
 {
     if (! bgCache.isValid())
         rebuildBackground();
-    g.drawImageAt (bgCache, 0, 0);
+    g.drawImage (bgCache, getLocalBounds().toFloat());
 
     const auto plot = getLocalBounds().toFloat().reduced (14.0f, 12.0f);
     const float cy = plot.getCentreY();
@@ -412,10 +417,18 @@ void SpectrumView::paint (juce::Graphics& g)
     }
 
     // ---- your content, post-carve (purple) + carved band (magenta) ---------------
+    // The curves live on a decibel axis (60 dB spans the full height). carveCurve is a
+    // LINEAR gain reduction, so it cannot be multiplied into a dB coordinate — doing that
+    // drew a dip several times deeper than reality. Convert the reduction to dB and drop
+    // the level by that fraction of the axis, which is what the ear and the meters agree
+    // the carve actually is.
     std::array<float, kPts> postCurve {};
     for (int i = 0; i < kPts; ++i)
-        postCurve[(size_t) i] = mainCurve[(size_t) i]
-                              * (1.0f - juce::jlimit (0.0f, 1.0f, carveCurve[(size_t) i]));
+    {
+        const float g = juce::jlimit (0.001f, 1.0f, 1.0f - carveCurve[(size_t) i]);
+        const float reductionNorm = (-20.0f * std::log10 (g)) / 60.0f;
+        postCurve[(size_t) i] = juce::jmax (0.0f, mainCurve[(size_t) i] - reductionNorm);
+    }
 
     {
         const auto p = areaPath (postCurve);
@@ -500,7 +513,7 @@ void SpectrumView::paint (juce::Graphics& g)
 
         row (0.0f,  "BELOW 250 Hz  (LAPTOP-BLIND)", juce::String (lowDb, 1) + " dB",
              colours::carved.withAlpha (0.85f));
-        row (15.0f, "AUTO DEPTH",
+        row (15.0f, autoOn ? "AUTO DEPTH" : "DEPTH",
              juce::String (juce::roundToInt (depth * 100.0f)) + " %",
              colours::active.withAlpha (0.85f));
     }
@@ -589,15 +602,28 @@ namespace
     }
 }
 
-CreditsOverlay::CreditsOverlay()
+void CreditsOverlay::ensureLogosLoaded()
 {
+    if (logosLoaded)
+        return;
+    logosLoaded = true;
+
+    // Decoding two multi-megapixel images and keying them for the dark UI is not free.
+    // The panel starts hidden and most sessions never open it, so this runs on the first
+    // show instead of at every editor construction — the editor opens instantly and the
+    // artwork is not held resident until it is actually needed.
     jedexLogo  = prepareLogoForDarkUI (
                      juce::ImageFileFormat::loadFrom (BinaryData::jedex_logo_png,
                                                       (size_t) BinaryData::jedex_logo_pngSize));
     bigiceLogo = prepareLogoForDarkUI (
                      juce::ImageFileFormat::loadFrom (BinaryData::bigice_logo_png,
                                                       (size_t) BinaryData::bigice_logo_pngSize));
-    setVisible (false);
+}
+
+void CreditsOverlay::visibilityChanged()
+{
+    if (isVisible())
+        ensureLogosLoaded();
 }
 
 void CreditsOverlay::paint (juce::Graphics& g)
