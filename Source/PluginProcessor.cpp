@@ -114,9 +114,12 @@ void CarveEngine::measureRequiredDepth() noexcept
         return;
     }
 
-    // Only bands where the priority source actually lives get a vote — we do not care
-    // that the hats are loud at 10 kHz if the vocal has nothing up there.
-    const float gate = peakP * 0.05f;
+    // Exclude only bands the priority genuinely does not occupy. This threshold has to
+    // be low: acoustic energy falls steeply with frequency, so a gate set as a fraction
+    // of the peak band would throw away everything above roughly 1 kHz — precisely the
+    // presence range that decides whether a vocal is understood. Relevance is handled by
+    // the weighting below, not by excluding bands.
+    const float gate = peakP * 1.0e-4f;    // -40 dB
 
     // How far the priority sits below its target ratio, in dB, averaged over the bands
     // that matter. Deliberately NOT an algebraic inversion of the carve equation: that
@@ -139,7 +142,12 @@ void CarveEngine::measureRequiredDepth() noexcept
         const float excessDb = juce::jlimit (0.0f, kMaxExcessDb,
                                              10.0f * std::log10 (kTargetR / R));
 
-        const float w = bandWeight[(size_t) b] * P;
+        // Weight by perceptual importance and by how present the priority is here — but
+        // compress the presence term. Raw energy spans 40 dB or more between a vocal's
+        // fundamental and its consonants, so weighting by it directly would let the low
+        // mids outvote the entire intelligibility range.
+        const float presence = std::sqrt (P / peakP);
+        const float w = bandWeight[(size_t) b] * presence;
         dsum += w * excessDb;
         wsum += w;
     }
