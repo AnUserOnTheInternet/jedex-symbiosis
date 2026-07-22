@@ -101,7 +101,7 @@ void CarveEngine::measureRequiredDepth() noexcept
         for (int k = bandEdge[(size_t) b]; k < bandEdge[(size_t) (b + 1)]; ++k)
         {
             sp += refEnergySm[(size_t) k];
-            sm += mainEBin[(size_t) k];
+            sm += mainEnergySm[(size_t) k];   // like for like — see processFrame
         }
         bandP[(size_t) b] = sp;
         bandM[(size_t) b] = sm;
@@ -168,6 +168,7 @@ void CarveEngine::reset() noexcept
     mainDelay.fill (0.0f); ola.fill (0.0f);
     refEnergySm.fill (0.0f);
     mainEBin.fill (0.0f);
+    mainEnergySm.fill (0.0f);
     gain.fill (1.0f);
 
     depth = targetDepth;
@@ -256,6 +257,15 @@ void CarveEngine::processFrame() noexcept
         const float rE = refEAccum[(size_t) k];
         rs += (rE > rs ? engAtk : engRel) * (rE - rs);
 
+        // The main content gets an envelope with the SAME attack/release as the
+        // reference. Auto-calibration divides one by the other, and a fast-attack /
+        // slow-release envelope rides near the recent peak while an instantaneous
+        // periodogram keeps dipping: comparing the two inflates the ratio by the
+        // programme's crest factor — 6 to 10 dB on music — which was enough to make
+        // every band look unmasked and pin the measured depth at zero forever.
+        float& ms = mainEnergySm[(size_t) k];
+        ms += (mE > ms ? engAtk : engRel) * (mE - ms);
+
         const float mask = anyRef ? rs / (rs + mE + eps) : 0.0f;
         const float t = 1.0f - depth * mask;
 
@@ -264,8 +274,10 @@ void CarveEngine::processFrame() noexcept
 
         if (hasTap)
         {
+            // Plot both curves from the same kind of measurement, so what the display
+            // shows is what the calibration actually compares.
             tap.refMag[k].store (std::sqrt (rs), std::memory_order_relaxed);
-            tap.mainMag[k].store (std::sqrt (mE), std::memory_order_relaxed);
+            tap.mainMag[k].store (std::sqrt (ms), std::memory_order_relaxed);
         }
     }
 

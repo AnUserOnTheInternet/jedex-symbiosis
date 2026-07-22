@@ -101,13 +101,13 @@ private:
     std::array<float, maxFftSize> scratch {};
 
     std::array<float, maxBins> refEAccum {}, refEnergySm {};
-    std::array<float, maxBins> mainEBin {};
+    std::array<float, maxBins> mainEBin {}, mainEnergySm {};
     std::array<float, maxBins> gain {}, gTarget {}, gSmooth {};
 
     // ---- auto-calibration: critical-band analysis ---------------------------------
     static constexpr int   kNumBands    = 24;     // Bark-like critical bands
     static constexpr float kLowHz       = 250.0f; // "laptop speakers lie below here"
-    static constexpr float kTargetR     = 1.6f;   // priority ~+2 dB over main in its bands
+    static constexpr float kTargetR     = 2.0f;   // priority ~+3 dB over main in its bands
     static constexpr float kMaxExcessDb = 12.0f;  // masking excess earning full depth
 
     int numBands = 0;
