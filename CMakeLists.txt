@@ -37,7 +37,7 @@ juce_add_binary_data(CarveAssets
 )
 
 juce_add_plugin(Carve
-    PRODUCT_NAME                "JeDEx CARVE"
+    PRODUCT_NAME                "CARVE"
     COMPANY_NAME                "JeDEx Audio"
     BUNDLE_ID                   com.jedexaudio.carve
     PLUGIN_MANUFACTURER_CODE    Jdex

@@ -159,7 +159,7 @@ public:
     bool hasEditor() const override                     { return true; }
 
     //==========================================================================
-    const juce::String getName() const override         { return "JeDEx CARVE"; }
+    const juce::String getName() const override         { return "CARVE"; }
     bool acceptsMidi() const override                   { return false; }
     bool producesMidi() const override                  { return false; }
     bool isMidiEffect() const override                  { return false; }
