@@ -48,6 +48,25 @@ jobs:
       - name: Build (Release)
         run: cmake --build build --config Release --parallel
 
+      # Validate on real Apple hardware — the strongest confidence short of owning a Mac.
+      # auval is Apple's own tool and is exactly what Logic and GarageBand run before they
+      # will load an Audio Unit; a pass here means Logic will accept the plug-in.
+      - name: Validate Audio Unit (auval)
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "build/Carve_artefacts/Release/AU/JeDEx CARVE.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i carve || true
+          auval -v aufx Crve Jdex
+
+      - name: Validate VST3 + AU (pluginval)
+        run: |
+          curl -L -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip
+          PV="pluginval.app/Contents/MacOS/pluginval"
+          "$PV" --strictness-level 10 --validate "build/Carve_artefacts/Release/VST3/JeDEx CARVE.vst3"
+          "$PV" --strictness-level 10 --validate "build/Carve_artefacts/Release/AU/JeDEx CARVE.component"
+
       # Universal AU (.component) and VST3 (.vst3) for Logic/GarageBand and every VST3 host.
       - name: Package macOS
         run: |
