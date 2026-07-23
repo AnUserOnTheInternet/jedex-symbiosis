@@ -1,4 +1,4 @@
-name: Build VST3
+name: Build
 
 on:
   push:
@@ -20,21 +20,55 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Package VST3
-        run: Compress-Archive -Path "build/Carve_artefacts/Release/VST3/JeDEx CARVE.vst3" -DestinationPath "JeDEx-CARVE-VST3.zip"
+        run: Compress-Archive -Path "build/Carve_artefacts/Release/VST3/JeDEx CARVE.vst3" -DestinationPath "JeDEx-CARVE-VST3-Windows.zip"
 
-      - name: Upload VST3 artifact
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: JeDEx-CARVE-VST3-Windows
+          name: JeDEx-CARVE-Windows-VST3
           path: build/Carve_artefacts/Release/VST3/
 
-      # Publish/refresh a "latest" release so the zip is downloadable
-      # without any GitHub authentication.
-      - name: Publish latest release
+      - name: Publish latest release (Windows)
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: "JeDEx CARVE — latest build"
-          files: JeDEx-CARVE-VST3.zip
+          files: JeDEx-CARVE-VST3-Windows.zip
+          make_latest: true
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      # Universal AU (.component) and VST3 (.vst3) for Logic/GarageBand and every VST3 host.
+      - name: Package macOS
+        run: |
+          mkdir -p out
+          cp -R "build/Carve_artefacts/Release/AU/JeDEx CARVE.component" out/ 2>/dev/null || true
+          cp -R "build/Carve_artefacts/Release/VST3/JeDEx CARVE.vst3" out/ 2>/dev/null || true
+          cd out && zip -r -y ../JeDEx-CARVE-macOS.zip . && cd ..
+          echo "--- built bundles:" && ls -la out
+          echo "--- architectures:" && lipo -info "out/JeDEx CARVE.vst3/Contents/MacOS/JeDEx CARVE" || true
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JeDEx-CARVE-macOS-AU-VST3
+          path: out/
+
+      - name: Publish latest release (macOS)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "JeDEx CARVE — latest build"
+          files: JeDEx-CARVE-macOS.zip
           make_latest: true

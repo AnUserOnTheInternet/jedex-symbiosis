@@ -484,10 +484,22 @@ void CarveAudioProcessor::reset()
 
 bool CarveAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
-    if (layouts.getMainInputChannelSet()  != juce::AudioChannelSet::stereo()
-     || layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
+    const auto mainIn  = layouts.getMainInputChannelSet();
+    const auto mainOut = layouts.getMainOutputChannelSet();
+
+    // Accept mono and stereo, not stereo only. Logic and GarageBand instantiate an
+    // effect in mono on a mono track and probe mono/mono during AU validation (auval),
+    // and Ableton, Reaper and others put it on mono tracks too. Rejecting those made the
+    // plug-in fail to load or fail validation on half the hosts. The main input and
+    // output must simply match.
+    const bool mainOk = (mainIn == mainOut)
+                        && (mainIn == juce::AudioChannelSet::mono()
+                            || mainIn == juce::AudioChannelSet::stereo());
+    if (! mainOk)
         return false;
 
+    // Sidechains are analysis-only, so any of disabled / mono / stereo is fine and they
+    // need not match the main width.
     for (int i = 1; i < layouts.inputBuses.size(); ++i)
     {
         const auto& set = layouts.getChannelSet (true, i);
